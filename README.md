@@ -9,7 +9,41 @@ lines, get progress bars, graphs and logs for free.
 
 Console without X11? Try `SDL_VIDEODRIVER=kmsdrm python3 deck.py`.
 
+## Requirements and permissions
+
+| Component | Required for |
+|---|---|
+| Python 3, `pygame-ce` (imported as `pygame`), `psutil` | Launcher and native Python apps; install with `python3 -m pip install -r requirements.txt` |
+| `arp-scan` and `nmap` | LAN device discovery and TCP port scanner |
+| NetworkManager with `nmcli` | Wi-Fi scanner; NetworkManager must be running |
+
+For Debian/Ubuntu-based devices, install the network tools with:
+
+```bash
+sudo apt update
+sudo apt install arp-scan nmap network-manager
+```
+
+**The GUI does not generally require root.** ARP discovery requires raw-packet
+access, normally provided by root or administrator-configured executable
+capabilities. The Nmap app uses TCP connect scanning (`-sT`), which does not
+itself require root. Wi-Fi scanning depends on NetworkManager's permissions.
+
+If your system requires root for `arp-scan`, running the launcher as root also
+runs every native app and custom script with root privileges. Only do this with
+reviewed, trusted code; prefer administrator-configured permissions for the
+specific tool rather than elevating the entire GUI. The launcher never invokes
+sudo automatically.
+
 ## Screenshots
+
+### Running on real hardware
+
+cyberdeckji's System monitor running on an **Anbernic RG35XXH**:
+
+![cyberdeckji System monitor running on an Anbernic RG35XXH handheld](docs/screenshots/anbernic-rg35xxh.png)
+
+### Interface previews
 
 Captured from the actual pygame views at 640x480 using synthetic demo data.
 These illustrate the interface, not results from a real network scan.
