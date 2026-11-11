@@ -1,0 +1,22 @@
+{
+  "submit_label": "Check network",
+  "fields": [
+    {
+      "type": "text",
+      "key": "host",
+      "label": "IP / Host",
+      "default": "1.1.1.1",
+      "format": "host",
+      "help": "A single IPv4, IPv6 or hostname."
+    },
+    {
+      "type": "number",
+      "key": "rounds",
+      "label": "Probes",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 30,
+      "step": 1
+    }
+  ]
+}
