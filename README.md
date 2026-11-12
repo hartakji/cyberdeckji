@@ -17,6 +17,8 @@ Console without X11? Try `SDL_VIDEODRIVER=kmsdrm python3 deck.py`.
 | `arp-scan` and `nmap` | LAN device discovery and TCP port scanner |
 | NetworkManager with `nmcli` | Wi-Fi scanner; NetworkManager must be running |
 | `mkfs.fat`, `mkfs.ext4`, `mkfs.ntfs`, `parted`, `partprobe` | Removable-storage formatting (only the selected filesystem formatter is required; partition tools are needed for whole drives) |
+| `systemctl`, GNU `timeout`, installed USB gadget services | USB-OTG apps |
+| `fallocate`, `parted`, and the selected `mkfs` formatter | Creating USB-OTG storage images (`mkfs.exfat` is needed for exFAT) |
 
 For Debian/Ubuntu-based devices, install the network tools with:
 
@@ -31,6 +33,8 @@ For the removable-storage tools on Debian/Ubuntu, install the relevant tools:
 sudo apt install dosfstools e2fsprogs ntfs-3g parted util-linux f3
 ```
 
+For exFAT image creation, also install `exfatprogs`.
+
 **The GUI does not generally require root.** ARP discovery requires raw-packet
 access, normally provided by root or administrator-configured executable
 capabilities. The Nmap app uses TCP connect scanning (`-sT`), which does not
@@ -41,6 +45,43 @@ runs every native app and custom script with root privileges. Only do this with
 reviewed, trusted code; prefer administrator-configured permissions for the
 specific tool rather than elevating the entire GUI. The launcher never invokes
 sudo automatically.
+
+## USB-OTG (Linux)
+
+**Apps > USB-OTG** contains:
+
+- **USB-MTP** starts the installed `usb-mtp` service.
+- **USB Storage** selects an existing `.img` from `~/Images/` or
+  creates a uniquely named 1, 4, 8, 16 or 32 GiB image there. New images
+  contain one MBR partition formatted as FAT32, exFAT, ext4 or NTFS. Space is
+  allocated upfront; failed or cancelled creation removes partial files.
+  Reopen the form to refresh its image list.
+- **USB CD-ROM emulator** selects a `.iso` from `~/ISO/`. Add ISO
+  files separately, then reopen the form to refresh its choices.
+
+These folders are outside the project directory. When launched with `sudo`,
+the apps use the invoking user's home and give that user ownership of newly
+created storage images. Move existing files from `~/cyberdeckji/Images/` and
+`~/cyberdeckji/ISO/` into `~/Images/` and `~/ISO/` respectively.
+
+The storage apps update `/etc/default/usb-massstorage` and start the installed
+`usb-massstorage` service. They set `USB_MASS_STORAGE_MODE` and
+`USB_MASS_STORAGE_IMAGE`; disk mode also sets `USB_MASS_STORAGE_SIZE` to the
+chosen size (such as `1G`) for new images or the exact byte size for existing
+ones. Other settings are preserved. **The service is
+external to this project:** verify that its installed implementation accepts
+these settings and byte sizes, and does not recreate or overwrite existing
+images, before using it. Host compatibility depends on the selected filesystem.
+
+Press B to stop the service. The launcher needs permission to edit the
+configuration and control the services; it never elevates privileges.
+Image creation needs sufficient free space and the tools listed above; it does
+not require a loop device. Its tool search includes `/usr/sbin` and `/sbin` even
+when the launcher's `PATH` omits them. If the requested service is already active, the app
+leaves it untouched. Cleanup cannot be guaranteed after a crash or forced
+termination. Avoid starting or stopping these services concurrently elsewhere.
+Service commands disable paging. For manual diagnostics without an interactive
+pager, use `sudo systemctl --no-pager status usb-massstorage.service`.
 
 ## Screenshots
 

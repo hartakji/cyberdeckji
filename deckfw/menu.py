@@ -282,7 +282,8 @@ def _volume(step_wpctl, step_pactl, step_amixer):
             ["amixer", "-q", "set", "Master", step_amixer]]
 
 
-GROUP_ICONS = {"Network": "icons/globe.png", "Removable Storage": "icons/storage.png"}
+GROUP_ICONS = {"Network": "icons/globe.png", "Removable Storage": "icons/storage.png",
+               "USB-OTG": "icons/usb-otg.png"}
 
 
 def default_menu(specs):

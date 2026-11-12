@@ -36,11 +36,13 @@ class IconTests(unittest.TestCase):
         for path in GROUP_ICONS.values():
             self.assertTrue((root / path).is_file(), path)
         specs = [AppSpec(name, lambda ctx: None, group=group)
-                 for name, group in (("A", "Network"), ("B", "Removable Storage"), ("C", "Other"))]
+                 for name, group in (("A", "Network"), ("B", "Removable Storage"),
+                                     ("C", "Other"), ("D", "USB-OTG"))]
         apps = next(item for item in default_menu(specs).items if item.label == "Apps")
         icons = {item.label: item.icon for item in apps.menu.items}
         self.assertEqual(icons["Network"], "icons/globe.png")
         self.assertEqual(icons["Removable Storage"], "icons/storage.png")
+        self.assertEqual(icons["USB-OTG"], "icons/usb-otg.png")
         self.assertEqual(icons["Other"], "icons/folder.png")
 
     def test_storage_app_icons_exist(self):
@@ -48,6 +50,15 @@ class IconTests(unittest.TestCase):
         for name in ("disk-info", "disk-format", "disk-backup", "disk-restore",
                      "disk-check", "disk-wipe", "speed", "fake-capacity"):
             self.assertTrue((root / f"icons/{name}.png").is_file(), name)
+
+    def test_usb_icons_load_at_menu_size(self):
+        root = str(Path(__file__).resolve().parents[1])
+        theme = Theme(320, 240, root=root)
+        for name in ("usb-otg", "usb-mtp", "usb-drive", "usb-cdrom"):
+            with self.subTest(name=name):
+                icon = theme.icon(f"icons/{name}.png", 20)
+                self.assertIsNotNone(icon)
+                self.assertEqual(icon.get_size(), (20, 20))
 
     def test_app_decorator_and_script_header_icons(self):
         with patch("deckfw.context.register") as register:
