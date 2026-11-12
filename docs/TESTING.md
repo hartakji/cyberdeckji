@@ -95,10 +95,11 @@ their settings.
 Wi-Fi scanner unit/integration tests use synthetic AP records and a temporary
 stub `nmcli`; they do not prove radio behavior. On the intended Linux handheld,
 with NetworkManager running and an enabled dual-band adapter, open Apps >
-Network > Wi-Fi scanner and confirm actual BSSID/channel readings, both band
-filters, interface selection, refresh and B cancellation. Permission, rfkill and
-driver restrictions should be checked there. Never run real discovery merely
-to validate parsing on a developer machine. Official command behavior is
+Network > Wi-Fi scanner and confirm actual encryption labels (`--` for open
+networks), BSSID/channel readings, both band filters, interface selection,
+refresh and B cancellation. Permission, rfkill and driver restrictions should
+be checked there. Never run real discovery merely to validate parsing on a
+developer machine. Official command behavior is
 documented in the [nmcli manual](https://networkmanager.dev/docs/api/latest/nmcli.html).
 
 ## Troubleshooting

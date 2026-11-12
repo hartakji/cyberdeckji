@@ -22,9 +22,10 @@ def escaped(value):
     return value.replace("\\", "\\\\").replace(":", "\\:")
 
 
-def record(ssid="Example", bssid="02:00:00:00:00:01", channel=1, frequency=2412, signal=70):
+def record(ssid="Example", bssid="02:00:00:00:00:01", channel=1, frequency=2412,
+           signal=70, security="WPA2"):
     return ":".join(escaped(str(value)) for value in
-                    (ssid, bssid, channel, str(frequency) + " MHz", signal))
+                    (ssid, security, bssid, channel, str(frequency) + " MHz", signal))
 
 
 class ParserTests(unittest.TestCase):
@@ -40,7 +41,11 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(networks), 4)
         self.assertEqual([ap.band for ap in networks], ["5", "2.4", "5", "2.4"])
         self.assertEqual(networks[1].ssid, r"Office:Wi\Fi")
+        self.assertEqual(networks[1].security, "WPA2")
         self.assertEqual(networks[-1].ssid, "")
+        self.assertEqual(networks[-1].security, "WPA2")
+        open_network = scanner.parse_networks([record(security="--")])[0]
+        self.assertEqual(open_network.security, "--")
         self.assertEqual({ap.channel for ap in scanner.parse_networks(lines, "2.4")}, {1, 14})
         self.assertEqual({ap.channel for ap in scanner.parse_networks(lines, "5")}, {36, 149})
         self.assertEqual(scanner.parse_networks([]), ())
@@ -136,7 +141,7 @@ class ScanTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[-7:],
                          ["device", "wifi", "list", "--rescan", "yes", "ifname", "wlan0"])
-        self.assertIn("SSID,BSSID,CHAN,FREQ,SIGNAL", command)
+        self.assertIn("SSID,SECURITY,BSSID,CHAN,FREQ,SIGNAL", command)
         self.assertEqual(command[1:9], ["--terse", "--escape", "yes", "--colors",
                                        "no", "--wait", "20", "--fields"])
         self.assertEqual(run.call_args.kwargs, {"log": False, "env": scanner.ENV})
@@ -243,7 +248,7 @@ class NetworkListTests(unittest.TestCase):
             self.assertEqual(view._top, 0)
 
     def test_table_headers_full_bssid_and_interfaces_are_rendered(self):
-        points = scanner.parse_networks([record()])
+        points = scanner.parse_networks([record(security="WPA1 WPA2 WPA3")])
         for size in ((320, 240), (640, 480)):
             theme = Theme(*size)
             view = scanner.NetworkList()
@@ -253,9 +258,15 @@ class NetworkListTests(unittest.TestCase):
                 view.draw(pygame.Surface(size), pygame.Rect(0, 30, size[0], size[1] - 60), theme)
             texts = [call.args[1] for call in render.call_args_list]
             self.assertIn("Interface: wlan0, wlp2s0", texts)
-            for value in ("SSID", "BSSID", "Ch", "Band", "Signal", "MHz",
-                          "02:00:00:00:00:01"):
+            header_start = texts.index("BSSID / SSID")
+            self.assertEqual(texts[header_start:header_start + 4],
+                             ["BSSID / SSID", "Enc", "Ch + Band", "Signal"])
+            for value in ("Enc", "Ch + Band", "Signal", "1 / 2.4G",
+                          "02:00:00:00:00:01", "Example"):
                 self.assertIn(value, texts)
+            self.assertIn("WPA1 WPA2 WPA3", texts)
+            self.assertNotIn("MHz", texts)
+            self.assertEqual(view._max_horizontal, 0)
 
     def test_actual_automatic_interfaces_are_published(self):
         ctx = context.Context(context.AppSpec("Scan", scanner.wifi_scanner))
@@ -313,7 +324,7 @@ class ScannerIntegrationTests(unittest.TestCase):
                     if block:
                         with app.ctx._lock:
                             runners = list(app.ctx._runners)
-                        if runners and "SSID,BSSID,CHAN,FREQ,SIGNAL" in runners[0].cmd:
+                        if runners and "SSID,SECURITY,BSSID,CHAN,FREQ,SIGNAL" in runners[0].cmd:
                             if runners[0].total:
                                 break
                     elif app.ctx.root.children and app.ctx.root.children[0].snapshot.updated:

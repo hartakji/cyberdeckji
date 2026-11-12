@@ -19,6 +19,7 @@ OPTIONS = ["--terse", "--escape", "yes", "--colors", "no", "--wait", "20"]
 @dataclass(frozen=True)
 class AccessPoint:
     ssid: str
+    security: str
     bssid: str
     channel: int
     frequency: int
@@ -103,9 +104,9 @@ def parse_networks(lines, band="both"):
             continue
         try:
             fields = split_fields(line)
-            if len(fields) != 5:
-                raise ValueError("Expected SSID,BSSID,CHAN,FREQ,SIGNAL")
-            ssid, bssid, channel, frequency, signal = fields
+            if len(fields) != 6:
+                raise ValueError("Expected SSID,SECURITY,BSSID,CHAN,FREQ,SIGNAL")
+            ssid, security, bssid, channel, frequency, signal = fields
             if not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", bssid):
                 raise ValueError("Invalid BSSID")
             if not channel.isdecimal() or not signal.isdecimal():
@@ -113,7 +114,8 @@ def parse_networks(lines, band="both"):
             freq = re.fullmatch(r"([0-9]+)(?: MHz)?", frequency)
             if not freq:
                 raise ValueError("Frequency must be in MHz")
-            ap = AccessPoint(ssid, bssid.upper(), int(channel), int(freq[1]), int(signal))
+            ap = AccessPoint(ssid, security, bssid.upper(), int(channel),
+                             int(freq[1]), int(signal))
             if not 1 <= ap.channel <= 233 or not 0 <= ap.signal <= 100:
                 raise ValueError("Channel or signal out of range")
             if ap.frequency <= 0:
@@ -166,7 +168,7 @@ def scan(ctx, nmcli, interface, band, on_interfaces=None):
                                if state not in ("unavailable", "unmanaged"))))
     if on_interfaces is not None:
         on_interfaces(interfaces)
-    args = command(nmcli, "SSID,BSSID,CHAN,FREQ,SIGNAL",
+    args = command(nmcli, "SSID,SECURITY,BSSID,CHAN,FREQ,SIGNAL",
                    "device", "wifi", "list", "--rescan", "yes")
     if interface:
         args.extend(["ifname", interface])
@@ -240,18 +242,29 @@ class NetworkList(Widget):
             text("B back to setup to retry", y, theme.warn)
             y += line_h
         footer_h = line_h + pad
-        row_h = font.get_linesize() + pad * 2
+        row_h = font.get_linesize() * 2 + pad * 2
         table = pygame.Rect(rect.x + pad, y + pad, width,
                             max(0, rect.bottom - y - pad - footer_h))
         self._rows = max(1, (table.h - row_h) // row_h)
         self._top = min(self._top, max(0, len(self._networks) - self._rows))
+        column_pad = min(pad, max(3, pad // 2))
+        bssid = "AA:BB:CC:DD:EE:FF"
+        encryption_width = font.size("WPA1 WPA2")[0] + column_pad * 2
+        channel_width = max(font.size("Ch + Band")[0],
+                            font.size("233 / 2.4G")[0]) + column_pad * 2
+        signal_width = max(font.size("Signal")[0], font.size("100%")[0]) + column_pad * 2
+        combined_width = font.size(f"{bssid} ({'M' * 18})")[0] + column_pad * 2
+        first_width = min(combined_width,
+                          max(font.size(bssid)[0] + column_pad * 2,
+                              table.w - encryption_width - channel_width - signal_width))
+        width_shift = first_width // 5
+        first_width -= width_shift
+        encryption_width += width_shift
         columns = [
-            ("SSID", max(110, font.size("M" * 18)[0]) + pad * 2),
-            ("BSSID", font.size("AA:BB:CC:DD:EE:FF")[0] + pad * 2),
-            ("Ch", font.size("233")[0] + pad * 2),
-            ("Band", font.size("2.4 GHz")[0] + pad * 2),
-            ("Signal", font.size("Signal")[0] + pad * 2),
-            ("MHz", font.size("5180")[0] + pad * 2),
+            ("BSSID / SSID", first_width),
+            ("Enc", encryption_width),
+            ("Ch + Band", channel_width),
+            ("Signal", signal_width),
         ]
         total_width = sum(w for _, w in columns)
         self._max_horizontal = max(0, total_width - table.w)
@@ -263,9 +276,19 @@ class NetworkList(Widget):
             pygame.draw.rect(surf, background, (table.x, row_y, table.w, row_h))
             x = table.x - self._horizontal
             for (name, cell_w), value in zip(columns, values):
-                color = theme.accent if header or name == "BSSID" else theme.text
-                image = theme.render(font, theme.fit(font, value, cell_w - 2 * pad), color)
-                surf.blit(image, (x + pad, row_y + (row_h - image.get_height()) // 2))
+                if isinstance(value, tuple):
+                    for line, line_color, line_index in (
+                            (value[0], theme.accent, 0), (value[1], theme.text, 1)):
+                        image = theme.render(
+                            font, theme.fit(font, line, cell_w - 2 * column_pad), line_color)
+                        surf.blit(image, (x + column_pad,
+                                          row_y + column_pad + line_index * font.get_linesize()))
+                else:
+                    color = theme.accent if header else theme.text
+                    image = theme.render(font, theme.fit(font, value,
+                                                         cell_w - 2 * column_pad), color)
+                    surf.blit(image, (x + column_pad,
+                                      row_y + (row_h - image.get_height()) // 2))
                 pygame.draw.line(surf, theme.line, (x + cell_w - 1, row_y),
                                  (x + cell_w - 1, row_y + row_h))
                 x += cell_w
@@ -274,8 +297,8 @@ class NetworkList(Widget):
 
         draw_row([name for name, _ in columns], table.y, theme.track, header=True)
         for index, ap in enumerate(self._networks[self._top:self._top + self._rows]):
-            draw_row([ap.ssid or "<hidden SSID>", ap.bssid, str(ap.channel),
-                      f"{ap.band} GHz", f"{ap.signal}%", str(ap.frequency)],
+            draw_row([(ap.bssid, ap.ssid or "<hidden SSID>"), ap.security,
+                      f"{ap.channel} / {ap.band}G", f"{ap.signal}%"],
                      table.y + (index + 1) * row_h,
                      theme.panel if index % 2 == 0 else theme.bg)
         if not self._networks:
