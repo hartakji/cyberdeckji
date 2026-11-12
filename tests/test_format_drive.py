@@ -14,6 +14,7 @@ from deckfw.loader import discover
 from deckfw.menu import Launch, Menu, MenuScreen, default_menu
 from deckfw.screens import Navigator
 from deckfw.theme import Theme
+from apps import _removable_storage as storage
 from apps import format_drive as formatter
 
 
@@ -56,12 +57,12 @@ class FormatDriveTests(unittest.TestCase):
         for name in ("sda", "sda1"):
             (self.dev / name).symlink_to("/dev/null")
         self.patches = [
-            patch.object(formatter, "SYS_BLOCK", self.sys),
-            patch.object(formatter, "SYS_DEV_BLOCK", self.sys_dev),
-            patch.object(formatter, "DEV", self.dev),
-            patch.object(formatter, "PROC", self.proc),
-            patch.object(formatter.sys, "platform", "linux"),
-            patch.object(formatter.stat, "S_ISBLK", return_value=True),
+            patch.object(storage, "SYS_BLOCK", self.sys),
+            patch.object(storage, "SYS_DEV_BLOCK", self.sys_dev),
+            patch.object(storage, "DEV", self.dev),
+            patch.object(storage, "PROC", self.proc),
+            patch.object(storage.sys, "platform", "linux"),
+            patch.object(storage.stat, "S_ISBLK", return_value=True),
         ]
         for mock in self.patches:
             mock.start()
@@ -101,51 +102,51 @@ class FormatDriveTests(unittest.TestCase):
         self.assertFalse(values["confirm"])
 
     def test_safety_rejects_mounts_holders_and_changed_identity(self):
-        target = formatter._target("sda", "sda1")
-        self.assertEqual(formatter._check_safe(target), target)
+        target = storage._target("sda", "sda1")
+        self.assertEqual(storage.check_safe(target), target)
         mountinfo = self.proc / "self" / "mountinfo"
         mountinfo.write_text(self.root_mount + f"2 1 {self.number} / /mnt rw - ext4 /dev/sda1 rw\n")
         with self.assertRaisesRegex(ValueError, "mounted"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
         mountinfo.write_text(self.root_mount)
         (self.part / "holders" / "dm-0").touch()
         with self.assertRaisesRegex(ValueError, "dependent"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
         (self.part / "holders" / "dm-0").unlink()
         (self.disk / "diskseq").write_text("124")
         with self.assertRaisesRegex(ValueError, "changed"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
 
     def test_refuses_unverifiable_mounts_and_other_namespace_mounts(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         other = self.proc / "456"
         other.mkdir()
         (other / "mountinfo").write_text(
             f"2 0 {self.number} / /mnt rw - ext4 /dev/sda1 rw\n")
         with self.assertRaisesRegex(ValueError, "mounted"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
         (other / "mountinfo").unlink()
         (self.proc / "self" / "mountinfo").unlink()
         with self.assertRaisesRegex(ValueError, "Cannot identify system storage"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
         (self.proc / "self" / "mountinfo").touch()
         with self.assertRaisesRegex(ValueError, "Cannot identify system storage"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
 
     def test_running_system_disk_and_all_partitions_are_excluded(self):
         (self.disk / "slaves").mkdir()
         (self.sys_dev / self.number).symlink_to(self.disk)
         (self.proc / "self" / "mountinfo").write_text(
             f"1 0 {self.number} / / rw - ext4 /dev/sda rw\n")
-        with patch.object(formatter, "_mounted_devices", return_value=set()):
+        with patch.object(storage, "_mounted_devices", return_value=set()):
             self.assertEqual(formatter.discover(), [])
             for name in ("sda", "sda1"):
                 with self.subTest(name=name), \
                         self.assertRaisesRegex(ValueError, "running system"):
-                    formatter._check_safe(formatter._target("sda", name))
+                    storage.check_safe(storage._target("sda", name))
 
     def test_system_partition_is_resolved_to_parent_disk(self):
-        self.assertEqual(formatter._system_disk_devices(), {"8:98"})
+        self.assertEqual(storage._system_disk_devices(), {"8:98"})
         (self.disk / "slaves").mkdir()
         partition = self.disk / "systempart"
         partition.mkdir()
@@ -155,9 +156,9 @@ class FormatDriveTests(unittest.TestCase):
         (self.sys_dev / self.number).symlink_to(self.disk)
         (self.proc / "self" / "mountinfo").write_text(
             "1 0 8:15 / / rw - ext4 /dev/sda2 rw\n")
-        with patch.object(formatter, "_mounted_devices", return_value=set()), \
+        with patch.object(storage, "_mounted_devices", return_value=set()), \
                 self.assertRaisesRegex(ValueError, "running system"):
-            formatter._check_safe(formatter._target("sda", "sda1"))
+            storage.check_safe(storage._target("sda", "sda1"))
 
     def test_layered_root_resolves_all_backing_disks(self):
         layer = self.sys / "dm-0"
@@ -171,8 +172,8 @@ class FormatDriveTests(unittest.TestCase):
         (self.sys_dev / "253:0").symlink_to(layer)
         (self.proc / "self" / "mountinfo").write_text(
             "1 0 253:0 / / rw - ext4 /dev/mapper/root rw\n")
-        self.assertEqual(formatter._system_disk_devices(), {"8:98", self.number})
-        with patch.object(formatter, "_mounted_devices", return_value=set()):
+        self.assertEqual(storage._system_disk_devices(), {"8:98", self.number})
+        with patch.object(storage, "_mounted_devices", return_value=set()):
             self.assertEqual(formatter.discover(), [])
 
     def test_no_eligible_drives_is_safe_empty_setup(self):
@@ -218,28 +219,28 @@ class FormatDriveTests(unittest.TestCase):
         (self.sys_dev / "179:0").symlink_to(boot)
         (self.proc / "self" / "mountinfo").write_text(
             "1 0 179:0 / / rw - ext4 /dev/mmcblk0 rw\n")
-        with patch.object(formatter, "_mounted_devices", return_value=set()):
+        with patch.object(storage, "_mounted_devices", return_value=set()):
             self.assertEqual([target.name for target in formatter.discover()], ["sda", "sda1"])
 
     def test_unidentifiable_root_blocks_discovery_and_formatting(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         ctx = Context(AppSpec("format", lambda ctx: None))
         (self.proc / "self" / "mountinfo").write_text(
             "1 0 0:42 / / rw - overlay overlay rw\n")
         with self.assertRaisesRegex(ValueError, "Cannot identify system storage"):
             formatter.discover()
-        with patch.object(formatter.shutil, "which", return_value="/tools/fake"), \
+        with patch.object(storage.shutil, "which", return_value="/tools/fake"), \
                 patch.object(ctx, "run") as run:
             with self.assertRaisesRegex(ValueError, "Cannot identify system storage"):
                 formatter.format_target(ctx, target, "ext4", None)
             run.assert_not_called()
 
     def test_swap_and_unknown_device_are_excluded(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         (self.proc / "swaps").write_text(
             f"Filename Type Size Used Priority\n{self.dev / 'sda1'} partition 1 0 -2\n")
         with self.assertRaisesRegex(ValueError, "swap"):
-            formatter._check_safe(target)
+            storage.check_safe(target)
         (self.proc / "swaps").write_text("Filename Type Size Used Priority\n")
         internal = self.sys / "nvme0n1"
         internal.mkdir()
@@ -257,15 +258,15 @@ class FormatDriveTests(unittest.TestCase):
         (card / "type").write_text("SD")
         self.write_device(mmc, "8:8", 100000)
         (mmc / "diskseq").write_text("126")
-        self.assertEqual(formatter._target("mmcblk0", "mmcblk0").transport, "SD")
+        self.assertEqual(storage._target("mmcblk0", "mmcblk0").transport, "SD")
         (card / "type").write_text("MMC")
         with self.assertRaisesRegex(ValueError, "not identified"):
-            formatter._target("mmcblk0", "mmcblk0")
+            storage._target("mmcblk0", "mmcblk0")
 
     def test_partition_format_uses_fixed_args_and_reports_success(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         ctx = Context(AppSpec("format", lambda ctx: None))
-        with patch.object(formatter.shutil, "which", side_effect=lambda name: "/tools/" + name), \
+        with patch.object(storage.shutil, "which", side_effect=lambda name: "/tools/" + name), \
                 patch.object(ctx, "run", return_value=RunResult(0, [])) as run:
             formatter.format_target(ctx, target, "FAT32", None)
         self.assertEqual(run.call_args.args[0],
@@ -273,15 +274,15 @@ class FormatDriveTests(unittest.TestCase):
         self.assertEqual(ctx._bar.value, 1)
 
     def test_full_disk_preflights_tools_and_creates_partition(self):
-        target = formatter._target("sda", "sda")
+        target = storage._target("sda", "sda")
         ctx = Context(AppSpec("format", lambda ctx: None))
-        with patch.object(formatter.shutil, "which", side_effect=lambda name: None), \
+        with patch.object(storage.shutil, "which", side_effect=lambda name: None), \
                 patch.object(ctx, "run") as run:
             with self.assertRaisesRegex(ValueError, "Required tool"):
                 formatter.format_target(ctx, target, "ext4", "gpt")
             run.assert_not_called()
         commands = []
-        original_partitions = formatter._partitions
+        original_partitions = storage._partitions
         state = {"cleared": False}
 
         def fake_run(args, **kwargs):
@@ -292,8 +293,8 @@ class FormatDriveTests(unittest.TestCase):
                 state["cleared"] = False
             return RunResult(0, [])
 
-        with patch.object(formatter.shutil, "which", side_effect=lambda name: "/tools/" + name), \
-                patch.object(formatter, "_partitions",
+        with patch.object(storage.shutil, "which", side_effect=lambda name: "/tools/" + name), \
+                patch.object(storage, "_partitions",
                              side_effect=lambda disk: [] if state["cleared"]
                              else original_partitions(disk)), \
                 patch.object(ctx, "run", side_effect=fake_run):
@@ -304,12 +305,12 @@ class FormatDriveTests(unittest.TestCase):
         self.assertEqual(commands[-1][-1], str(self.dev / "sda1"))
 
     def test_mount_or_missing_confirmation_prevents_commands(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         ctx = Context(AppSpec("format", lambda ctx: None),
                       {"target": target.token(), "filesystem": "NTFS", "confirm": True})
         (self.proc / "self" / "mountinfo").write_text(
             self.root_mount + f"2 1 {self.number} / /mnt rw - ext4 /dev/sda1 rw\n")
-        with patch.object(formatter.shutil, "which", return_value="/tools/fake"), \
+        with patch.object(storage.shutil, "which", return_value="/tools/fake"), \
                 patch.object(ctx, "run") as run:
             formatter.format_drive(ctx)
         self.assertEqual(ctx.status, "error")
@@ -321,24 +322,24 @@ class FormatDriveTests(unittest.TestCase):
 
     def test_mbr_size_limit_and_stale_device_fail_before_commands(self):
         (self.disk / "size").write_text(str(0x100000000))
-        target = formatter._target("sda", "sda")
+        target = storage._target("sda", "sda")
         ctx = Context(AppSpec("format", lambda ctx: None))
         with patch.object(ctx, "run") as run:
             with self.assertRaisesRegex(ValueError, "too large"):
                 formatter.format_target(ctx, target, "NTFS", "msdos")
             run.assert_not_called()
         (self.disk / "diskseq").write_text("999")
-        with patch.object(formatter.shutil, "which", return_value="/tools/fake"), \
+        with patch.object(storage.shutil, "which", return_value="/tools/fake"), \
                 patch.object(ctx, "run") as run:
             with self.assertRaisesRegex(ValueError, "changed"):
                 formatter.format_target(ctx, target, "NTFS", "gpt")
             run.assert_not_called()
 
     def test_error_stops_sequence_and_no_false_success(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         ctx = Context(AppSpec("format", lambda ctx: None),
                       {"target": target.token(), "filesystem": "NTFS", "confirm": True})
-        with patch.object(formatter.shutil, "which", return_value="/tools/mkfs.ntfs"), \
+        with patch.object(storage.shutil, "which", return_value="/tools/mkfs.ntfs"), \
                 patch.object(ctx, "run", return_value=RunResult(1, ["Permission denied"])) as run:
             formatter.format_drive(ctx)
         self.assertEqual(ctx.status, "error")
@@ -347,24 +348,24 @@ class FormatDriveTests(unittest.TestCase):
         run.assert_called_once()
 
     def test_hotplug_change_after_partition_table_stops_before_partitioning(self):
-        target = formatter._target("sda", "sda")
+        target = storage._target("sda", "sda")
         ctx = Context(AppSpec("format", lambda ctx: None))
 
         def fake_run(args, **kwargs):
             (self.disk / "diskseq").write_text("999")
             return RunResult(0, [])
 
-        with patch.object(formatter.shutil, "which", side_effect=lambda name: "/tools/" + name), \
+        with patch.object(storage.shutil, "which", side_effect=lambda name: "/tools/" + name), \
                 patch.object(ctx, "run", side_effect=fake_run) as run:
             with self.assertRaisesRegex(ValueError, "changed"):
                 formatter.format_target(ctx, target, "ext4", "gpt")
             self.assertEqual(run.call_count, 1)
 
     def test_format_cancellation_is_reported(self):
-        target = formatter._target("sda", "sda1")
+        target = storage._target("sda", "sda1")
         ctx = Context(AppSpec("format", lambda ctx: None),
                       {"target": target.token(), "filesystem": "NTFS", "confirm": True})
-        with patch.object(formatter.shutil, "which", return_value="/tools/mkfs.ntfs"), \
+        with patch.object(storage.shutil, "which", return_value="/tools/mkfs.ntfs"), \
                 patch.object(ctx, "run", side_effect=Cancelled):
             with self.assertRaises(Cancelled):
                 formatter.format_drive(ctx)

@@ -282,6 +282,9 @@ def _volume(step_wpctl, step_pactl, step_amixer):
             ["amixer", "-q", "set", "Master", step_amixer]]
 
 
+GROUP_ICONS = {"Network": "icons/globe.png", "Removable Storage": "icons/storage.png"}
+
+
 def default_menu(specs):
     native_specs = [s for s in specs if s.source == "native"]
     custom_specs = [s for s in specs if s.source == "custom"]
@@ -293,7 +296,8 @@ def default_menu(specs):
     if len(groups) <= 1:
         apps_items = [Launch(s) for s in app_specs]
     else:
-        apps_items = [Submenu(name, Menu(name, [Launch(s) for s in members]))
+        apps_items = [Submenu(name, Menu(name, [Launch(s) for s in members]),
+                              icon=GROUP_ICONS.get(name, "icons/folder.png"))
                       for name, members in sorted(groups.items(), key=lambda kv: kv[0].lower())]
 
     controls = Menu("Controls", [

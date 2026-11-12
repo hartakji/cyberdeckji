@@ -215,7 +215,7 @@ class PartitionTable(Widget):
              " | Up/Down rows | Left/Right columns", rect.bottom - footer_h, theme.dim)
 
 
-@app(name="Disk information", group="Removable Storage", setup=setup)
+@app(name="Disk information", group="Removable Storage", icon="icons/disk-info.png", setup=setup)
 def disk_information(ctx):
     try:
         disk = selected_disk(ctx.params["disk"])

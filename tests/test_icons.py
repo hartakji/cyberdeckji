@@ -30,6 +30,25 @@ class IconTests(unittest.TestCase):
         self.assertEqual(Command("Command", ["true"]).icon, "icons/script.png")
         self.assertEqual(Action("Action", lambda screen: None).icon, "icons/action.png")
 
+    def test_group_submenus_use_group_icons_with_folder_fallback(self):
+        from deckfw.menu import GROUP_ICONS, default_menu
+        root = Path(__file__).resolve().parents[1]
+        for path in GROUP_ICONS.values():
+            self.assertTrue((root / path).is_file(), path)
+        specs = [AppSpec(name, lambda ctx: None, group=group)
+                 for name, group in (("A", "Network"), ("B", "Removable Storage"), ("C", "Other"))]
+        apps = next(item for item in default_menu(specs).items if item.label == "Apps")
+        icons = {item.label: item.icon for item in apps.menu.items}
+        self.assertEqual(icons["Network"], "icons/globe.png")
+        self.assertEqual(icons["Removable Storage"], "icons/storage.png")
+        self.assertEqual(icons["Other"], "icons/folder.png")
+
+    def test_storage_app_icons_exist(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("disk-info", "disk-format", "disk-backup", "disk-restore",
+                     "disk-check", "disk-wipe", "speed", "fake-capacity"):
+            self.assertTrue((root / f"icons/{name}.png").is_file(), name)
+
     def test_app_decorator_and_script_header_icons(self):
         with patch("deckfw.context.register") as register:
             @app(name="Example", icon="icons/python.png")

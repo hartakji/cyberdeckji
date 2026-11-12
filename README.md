@@ -25,10 +25,10 @@ sudo apt update
 sudo apt install arp-scan nmap network-manager
 ```
 
-For removable-storage formatting on Debian/Ubuntu, install the relevant tools:
+For the removable-storage tools on Debian/Ubuntu, install the relevant tools:
 
 ```bash
-sudo apt install dosfstools e2fsprogs ntfs-3g parted
+sudo apt install dosfstools e2fsprogs ntfs-3g parted util-linux f3
 ```
 
 **The GUI does not generally require root.** ARP discovery requires raw-packet
@@ -127,6 +127,85 @@ elevating the launcher is necessary, remember that all native and custom code
 runs with those privileges. Formatter/partitioner errors are displayed.
 If no eligible drives are available, the setup shows an empty state; connect or
 unmount a drive, then press B and reopen the formatter to refresh the list.
+
+The other Removable Storage tools share the formatter's drive discovery and
+safety checks: the system disk and mounted or busy drives are never listed,
+and an empty state is shown when nothing is eligible. Destructive tools need an
+explicit **Yes** confirmation, which resets whenever another field changes.
+Most need read/write access to `/dev/sdX` or `/dev/mmcblkN` (usually root).
+
+- **Backup drive** saves a whole drive to
+  `~/Backups/<Drive>-<YYYYMMDD-HHMMSS>.img` (raw; can be loop-mounted or used
+  with Ventoy) or `.img.gz` (gzip level 1; smaller but slower). A `.json`
+  sidecar records the original size. Raw backups check free space first;
+  failed or cancelled backups delete the partial file.
+- **Backup files** mounts a selected partition read-only and lets you select
+  files and folders from different directories. It copies only selected content
+  into `~/Backups/<Drive>-<YYYYMMDD-HHMMSS>/`, retaining partition-relative paths,
+  rather than creating a drive image. See the controls and limitations below.
+- **Restore drive** writes a `.img`/`.img.gz` from `~/Backups` over a whole
+  drive. It refuses drives smaller than the image and stops if an image of
+  unknown size overflows the drive.
+- **Filesystem check** runs `fsck.fat`, `e2fsck` or `ntfsfix` on an unmounted
+  partition, either **Check only** (no changes) or **Check and repair**.
+  `ntfsfix` only fixes basic NTFS problems.
+- **Secure wipe** offers **Quick** (`wipefs` plus zeroing the first and last
+  MiB), **Scramble** (Quick plus random data over the first/last 64 MiB and one
+  random MiB in every 64 MiB, about 2%) and **Full zero** (every byte). Scramble
+  defeats normal recovery, but file carving may recover fragments. Because of
+  flash wear leveling, no software wipe can be guaranteed.
+- **Speed test** reads up to 256 MiB from the raw drive, then temporarily
+  mounts its first FAT/exFAT/ext/NTFS partition, writes a file of up to
+  256 MiB (leaving 16 MiB free), deletes it, and always unmounts. The write test
+  is skipped when the partition has less than 32 MiB free or there is no
+  mountable partition. Results are shown as graphs, and USB 2.0 limits speed.
+- **Fake capacity check** runs `f3probe --time-ops` in its default
+  non-destructive mode, which restores every block it writes, to detect
+  counterfeit drives. Cancelling or unplugging during the probe can leave
+  blocks unrestored.
+
+### Backup files
+
+Open **Apps > Removable Storage > Backup files**. Choose **Drive**, then
+**Partition**, then **Browse**. The drive must have all partitions unmounted;
+the system disk, swap and busy devices are excluded. Partition choices follow
+the selected drive. Connect/unmount a drive and reopen setup to refresh.
+
+Use **Up/Down** to move, **A** to open a folder, and **X** (or **Right**, including
+the keyboard Right arrow) to select/deselect a file or folder. A on a file also
+toggles it. A selected folder includes its entire contents, including hidden
+files and empty folders. Selections persist as you navigate; overlapping
+selections are copied only once. **B** goes up; at the partition root it closes
+the browser and triggers cleanup. Highlight **Back up selected** and press A to
+start. Scanning is indeterminate; copying shows the current file, copied/total
+bytes and progress. B cancels during scanning/copying.
+
+Output is ordinary files, not an archive, with paths relative to the partition:
+selecting `Documents/notes.txt` creates
+`~/Backups/<Drive>-<Date>/Documents/notes.txt`. Existing backups are not
+overwritten; collisions get a numeric suffix. Failed/cancelled copies stay
+marked `.partial`, with their path shown; there is no automatic resume or merge.
+The backup uses the home directory of the user running the launcher.
+
+This tool needs Linux `mount`, `umount`, `blkid` (util-linux), `timeout`
+(coreutils), and permission to mount the device (normally root). It mounts
+FAT/exFAT/ext2/ext3/ext4/NTFS read-only with execution/device/setuid restrictions;
+ext3/ext4 disable journal replay and NTFS uses the kernel `ntfs3` driver's
+`norecover` option. Unsupported/missing drivers, dirty filesystems needing
+recovery and mount failures are reported without a read-write fallback.
+No repair is attempted.
+
+Source symlinks are preserved as links, never followed; they can still point
+outside the backup when opened later. Nested mounts and special files (devices,
+sockets, FIFOs) are refused. File/directory timestamps and ordinary permission
+bits are preserved where supported; metadata failures are reported. This is
+not a full-fidelity clone: ownership, ACLs/xattrs, hard-link relationships,
+setuid/setgid bits and sparse allocation are not preserved.
+
+The shutdown hook unmounts only the tool's own mount after success, browser exit,
+cancellation or error. Wait for **Source unmounted** before removing the drive.
+Unmount failures keep the mount directory and show its path; manually resolve
+the failure before removing media. Never unplug during a copy or cleanup.
 
 ## Port scanner (Linux)
 
@@ -516,7 +595,9 @@ Python apps can set a default with
 `@app(name="My app", icon="icons/python.png")`; standalone scripts can use
 `# icon: icons/network.png` in their first 20 lines. `Launch` uses that icon
 unless overridden. Entries otherwise get basic app, script, action or folder
-icons; the main sections have their own icons. Pass `icon=None` to a submenu,
+icons; the main sections have their own icons. Native app group submenus use
+`GROUP_ICONS` in `deckfw/menu.py` (for example Network and Removable Storage)
+and fall back to the folder icon. Pass `icon=None` to a submenu,
 command, action or Run entry to leave its icon slot empty. Labels remain aligned.
 Icons do not change discovery, grouping, or script placement.
 

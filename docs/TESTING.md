@@ -57,6 +57,8 @@ executable examples whose behavior needs checking.
 | `tests/test_port_scanner.py` | Local interface choices, ARP/XML parsing, TCP ranges, selectable tables, result/back navigation, errors and stub process cancellation/temporary XML cleanup |
 | `tests/test_format_drive.py` | Synthetic USB/SD discovery, safety preflight, conditional setup, formatter commands and cancellation; no real disks are formatted |
 | `tests/test_disk_information.py` | Synthetic removable disks, lsblk output, identity changes and table rendering without touching real devices |
+| `tests/test_storage_tools.py` | Backup/restore, filesystem check, secure wipe, speed test and fake-capacity tools against synthetic sysfs and a temporary file standing in for the drive; no real disks are touched |
+| `tests/test_backup_files.py` | Dependent drive/partition form, read-only mount flags and shutdown cleanup, multi-select browsing, path containment, byte progress, metadata and partial backups using temporary source trees and mocked mount commands |
 
 Port scanner tests do not probe the developer's network. On your authorized
 Linux LAN, verify interface selection, arp-scan permissions, device IP/MAC/vendor
