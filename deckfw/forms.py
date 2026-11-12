@@ -22,19 +22,25 @@ class SetupScreen(Screen):
     def submit(self):
         if self.nav.top is not self:
             return
-        for index, field in enumerate(self.form.fields):
+        for index, field in enumerate(self.form.visible_fields(self.values)):
             try:
                 field.validate(self.values[field.key])
             except ValueError as exc:
                 self.selected = index
                 self.error = f"{field.label}: {exc}"
                 return
-        params = self.form.validate(self.values)
+        try:
+            params = self.form.validate(self.values)
+        except ValueError as exc:
+            self.error = str(exc)
+            return
         self.error = ""
+        self.form.submitted(self.values)
         self.nav.push(AppScreen(self.spec, params=params))
 
     def action(self, name):
-        count = len(self.form.fields)
+        fields = self.form.visible_fields(self.values)
+        count = len(fields)
         if name == "b":
             self.nav.pop()
         elif name in ("up", "down"):
@@ -44,16 +50,29 @@ class SetupScreen(Screen):
             if name == "a":
                 self.submit()
         else:
-            field = self.form.fields[self.selected]
+            field = fields[self.selected]
             if name in ("left", "right"):
-                self.values[field.key] = field.adjust(
-                    self.values[field.key], 1 if name == "right" else -1)
+                previous = self.values[field.key]
+                self.values[field.key] = field.adjust(previous, 1 if name == "right" else -1)
+                if self.values[field.key] != previous:
+                    self.form.changed(self.values, field.key)
+                visible = self.form.visible_fields(self.values)
+                self.selected = next((index for index, item in enumerate(visible)
+                                      if item.key == field.key),
+                                     min(self.selected, len(visible)))
                 self.error = ""
             elif name == "a" and isinstance(field, Text):
                 self.nav.push(TextEditor(field, self.values[field.key], self._commit))
 
     def _commit(self, value):
-        self.values[self.form.fields[self.selected].key] = value
+        key = self.form.visible_fields(self.values)[self.selected].key
+        previous = self.values[key]
+        self.values[key] = value
+        if value != previous:
+            self.form.changed(self.values, key)
+        visible = self.form.visible_fields(self.values)
+        self.selected = next((index for index, item in enumerate(visible)
+                              if item.key == key), min(self.selected, len(visible)))
         self.error = ""
 
     def draw(self, surf, rect, theme):
@@ -65,7 +84,8 @@ class SetupScreen(Screen):
         Label(self.spec.name, size="small", valign="center").draw(
             surf, pygame.Rect(rect.x + pad, rect.y, rect.w - 2 * pad, head), theme)
         visible = max(1, (rect.h - head - footer) // row_h)
-        total = len(self.form.fields) + 1
+        fields = self.form.visible_fields(self.values)
+        total = len(fields) + 1
         top = max(0, self.selected - visible + 1)
         for index in range(top, min(total, top + visible)):
             row = pygame.Rect(rect.x + pad, rect.y + head + (index - top) * row_h,
@@ -73,12 +93,12 @@ class SetupScreen(Screen):
             if index == self.selected:
                 pygame.draw.rect(surf, theme.panel, row)
                 pygame.draw.rect(surf, theme.accent, (row.x, row.y, 3, row.h))
-            if index == len(self.form.fields):
+            if index == len(fields):
                 Label(self.form.submit_label, align="center", color="accent",
                       valign="center").draw(
                     surf, row, theme)
                 continue
-            field = self.form.fields[index]
+            field = fields[index]
             label_w = row.w * 2 // 5
             value_rect = pygame.Rect(row.x + label_w, row.y, row.w - label_w, row.h)
             if isinstance(field, Number) and field.maximum > field.minimum:
@@ -95,8 +115,8 @@ class SetupScreen(Screen):
                 text = "< " + text + " >"
             Label(text, align="center", valign="center").draw(surf, value_rect, theme)
         message = self.error
-        if not message and self.selected < len(self.form.fields):
-            message = self.form.fields[self.selected].help
+        if not message and self.selected < len(fields):
+            message = fields[self.selected].help
         # Wrap rather than truncate validation messages on small screens.
         width = max(1, rect.w - 2 * pad)
         words, lines, current = message.split(), [], ""

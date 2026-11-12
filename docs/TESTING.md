@@ -55,6 +55,8 @@ executable examples whose behavior needs checking.
 | `tests/test_parameter_examples.py` | Real demo/ping/shell sample contracts without actual network traffic |
 | `tests/test_wifi_scanner.py` | Escaped nmcli output, band filtering, setup/command errors, stale snapshots, scrolling and subprocess cancellation without real wireless scans |
 | `tests/test_port_scanner.py` | Local interface choices, ARP/XML parsing, TCP ranges, selectable tables, result/back navigation, errors and stub process cancellation/temporary XML cleanup |
+| `tests/test_format_drive.py` | Synthetic USB/SD discovery, safety preflight, conditional setup, formatter commands and cancellation; no real disks are formatted |
+| `tests/test_disk_information.py` | Synthetic removable disks, lsblk output, identity changes and table rendering without touching real devices |
 
 Port scanner tests do not probe the developer's network. On your authorized
 Linux LAN, verify interface selection, arp-scan permissions, device IP/MAC/vendor

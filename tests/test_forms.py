@@ -174,6 +174,36 @@ class FormScreenTests(unittest.TestCase):
             Label("Legacy").draw(surface, rect, theme)
             self.assertEqual(surface.blit.call_args.args[1], rect.topleft)
 
+    def test_conditional_fields_are_hidden_skipped_and_omitted_from_submit(self):
+        calls = []
+        form = Form([
+            Toggle("whole", "Whole drive"),
+            Choice("table", "Table", [("MBR", "mbr"), ("GPT", "gpt")], "mbr"),
+            Toggle("confirm", "Confirm"),
+        ], visible_when={"table": lambda values: values["whole"]})
+        spec = AppSpec("Conditional", lambda ctx: calls.append(ctx.params), setup=lambda: form)
+        screen = SetupScreen(spec)
+        nav = Navigator()
+        self.addCleanup(nav.close_all)
+        nav.push(MenuScreen(Menu("Main", [])))
+        nav.push(screen)
+        screen.action("down")
+        self.assertEqual(form.visible_fields(screen.values)[screen.selected].key, "confirm")
+        screen.action("up")
+        screen.action("right")
+        self.assertEqual([field.key for field in form.visible_fields(screen.values)],
+                         ["whole", "table", "confirm"])
+        screen.action("down")
+        screen.action("right")
+        self.assertEqual(screen.values["table"], "gpt")
+        screen.action("up")
+        screen.action("left")
+        screen.values["table"] = "invalid hidden value"
+        screen.selected = 2
+        screen.action("a")
+        nav.top._thread.join(2)
+        self.assertEqual(calls, [{"whole": False, "confirm": False}])
+
 
 class TextRoutingTests(unittest.TestCase):
     def test_keyboard_shortcuts_are_scoped_but_controller_quit_survives(self):

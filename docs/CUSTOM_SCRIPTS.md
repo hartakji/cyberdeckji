@@ -142,6 +142,15 @@ gets typed values; scripts get strings in `DECK_PARAM_<UPPERCASE_KEY>`:
 booleans are `true`/`false`, numbers use locale-independent serialization.
 Convert with `int(...)`, `float(...)`, or `value == "true"` in Python.
 
+Python forms may pass `visible_when={"field_key": predicate}` to `Form`.
+Each predicate receives the current dictionary of all field values and returns
+whether that field should be shown. Hidden values remain in the setup screen
+but are not validated or included in submitted parameters. Predicates must be
+cheap and deterministic. `Form.changed(values, key)` and
+`Form.submitted(values)` may be overridden to reset dependent controls after a
+change or a successful submission. These Python-only features are not
+available in JSON sidecars.
+
 Host validation accepts a single IP or ASCII hostname, not network ranges,
 URLs, or arbitrary shell expressions. Required empty text is an invalid
 default; supply a valid default or use `required=False`. Defaults reset on

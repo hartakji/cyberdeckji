@@ -16,12 +16,19 @@ Console without X11? Try `SDL_VIDEODRIVER=kmsdrm python3 deck.py`.
 | Python 3, `pygame-ce` (imported as `pygame`), `psutil` | Launcher and native Python apps; install with `python3 -m pip install -r requirements.txt` |
 | `arp-scan` and `nmap` | LAN device discovery and TCP port scanner |
 | NetworkManager with `nmcli` | Wi-Fi scanner; NetworkManager must be running |
+| `mkfs.fat`, `mkfs.ext4`, `mkfs.ntfs`, `parted`, `partprobe` | Removable-storage formatting (only the selected filesystem formatter is required; partition tools are needed for whole drives) |
 
 For Debian/Ubuntu-based devices, install the network tools with:
 
 ```bash
 sudo apt update
 sudo apt install arp-scan nmap network-manager
+```
+
+For removable-storage formatting on Debian/Ubuntu, install the relevant tools:
+
+```bash
+sudo apt install dosfstools e2fsprogs ntfs-3g parted
 ```
 
 **The GUI does not generally require root.** ARP discovery requires raw-packet
@@ -79,6 +86,47 @@ is appreciated but is not an additional license condition.
 Dependencies and external commands retain their own licenses. This repository
 does not bundle `nmap`, `arp-scan` or NetworkManager; install them separately.
 Review their licenses before distributing a combined software image.
+
+## Removable storage (Linux)
+
+**Apps > Removable Storage > Disk information** shows the size of a selected
+USB drive or SD card and a scrollable table of its partitions, sizes and
+filesystem types. Mounted and read-only media can be inspected. It uses
+`lsblk` from util-linux without changing the drive; unavailable filesystem
+information is shown as **Unknown**, and Linux `vfat` is shown as **FAT**
+(without distinguishing FAT versions). Drive health/SMART is not assessed.
+
+**Apps > Removable Storage > Format drive** formats an existing partition or
+an entire USB storage device or SD card as FAT32, ext4 or NTFS. Whole-drive
+formatting destroys the partition table and all partitions, then creates a new
+MBR or GPT table with one partition. MBR is the default; drives larger than
+the app's conservative 2 TiB MBR limit require GPT. The operation permanently
+destroys data; it is not a secure data-erasure tool.
+
+Select the device, filesystem, and (for whole drives) partition table. Confirm
+the device name and capacity, explicitly set **Erase data?** to Yes, then
+select **Format**. Changing the selection resets the confirmation. The
+progress bar is indeterminate when the formatting tools cannot report reliable
+overall progress. An interruption or error can leave the drive partially
+formatted; do not remove it while the operation is running.
+
+Only positively identified USB storage and SD cards are offered. The app
+excludes the disk backing the running root filesystem, along with disks with
+mounted partitions, active swap, or block-device holders. If the root backing
+disk cannot be identified, formatting is unavailable rather than guessing;
+this can happen with overlay or other virtual root filesystems. The app follows
+block-device dependencies for supported layered roots. It does not attempt to
+identify detached or unmounted boot media separate from the running root disk.
+For other removable media,
+unmount or release all partitions on the disk first. It rechecks identity and
+usage before destructive steps, but hotplug and mount races cannot be entirely
+eliminated. It refuses to run when it cannot check process mount information,
+system metadata or device permissions. Tools and permissions must already be
+available; the app never automatically invokes sudo or unmounts media. If
+elevating the launcher is necessary, remember that all native and custom code
+runs with those privileges. Formatter/partitioner errors are displayed.
+If no eligible drives are available, the setup shows an empty state; connect or
+unmount a drive, then press B and reopen the formatter to refresh the list.
 
 ## Port scanner (Linux)
 

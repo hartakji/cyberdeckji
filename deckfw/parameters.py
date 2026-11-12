@@ -149,7 +149,7 @@ class Number(Field):
 
 
 class Form:
-    def __init__(self, fields, submit_label="Run"):
+    def __init__(self, fields, submit_label="Run", *, visible_when=None):
         self.fields = list(fields)
         if not isinstance(submit_label, str) or not submit_label:
             raise ValueError("Submit label must be nonempty text")
@@ -165,6 +165,20 @@ class Form:
                 field.validate(field.default)
             except ValueError as exc:
                 raise ValueError(f"{field.key}: invalid default: {exc}") from exc
+        self.visible_when = dict(visible_when or {})
+        if any(key not in {field.key for field in self.fields} or not callable(predicate)
+               for key, predicate in self.visible_when.items()):
+            raise ValueError("Invalid conditional field")
+
+    def visible_fields(self, values):
+        return [field for field in self.fields
+                if field.key not in self.visible_when or self.visible_when[field.key](values)]
+
+    def changed(self, values, key):
+        """React to a field change before the setup screen is redrawn."""
+
+    def submitted(self, values):
+        """React after a validated parameter snapshot has been taken."""
 
     def defaults(self):
         return {field.key: copy.deepcopy(field.default) for field in self.fields}
@@ -173,7 +187,7 @@ class Form:
         if set(values) != {field.key for field in self.fields}:
             raise ValueError("Parameter keys do not match the form")
         return {field.key: copy.deepcopy(field.validate(values[field.key]))
-                for field in self.fields}
+                for field in self.visible_fields(values)}
 
 
 def load_form(path):
