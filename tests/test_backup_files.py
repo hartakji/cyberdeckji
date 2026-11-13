@@ -2,6 +2,7 @@ from dataclasses import replace
 import errno
 import json
 import os
+import pwd
 from pathlib import Path, PurePosixPath
 import queue
 import tempfile
@@ -21,6 +22,21 @@ from test_storage_tools import StorageFixture
 
 
 READ_MOUNTS = tool.mount_records
+
+
+class BackupLocationTests(unittest.TestCase):
+    def test_backup_folder_is_beside_user_media(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(Path, "home", return_value=Path("/home/user")):
+            self.assertEqual(storage.backup_dir(), Path("/home/user/Backups"))
+
+    def test_sudo_backups_use_invoking_user_home(self):
+        user = pwd.struct_passwd(("user", "x", 1234, 5678, "",
+                                 "/home/user", "/bin/sh"))
+        with patch.dict(os.environ, {"SUDO_UID": "1234", "HOME": "/root"}), \
+             patch.object(os, "geteuid", return_value=0), \
+             patch.object(pwd, "getpwuid", return_value=user):
+            self.assertEqual(storage.backup_dir(), Path("/home/user/Backups"))
 
 
 class FormTests(StorageFixture):

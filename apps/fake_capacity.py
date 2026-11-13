@@ -42,7 +42,8 @@ def fake_capacity(ctx):
             raise ValueError("f3probe not found; install it with: apt install f3") from None
         storage.check_safe(selected)
         ctx.progress(None, f"Probing {selected.name}")
-        result = storage.run_tool(ctx, [tool, "--time-ops", str(storage.DEV / selected.name)],
+        result = storage.run_tool(ctx, [tool, "--min-memory", "--time-ops",
+                                       str(storage.DEV / selected.name)],
                                   check=False, log=True)
         message, color = verdict(result.lines, result.returncode)
         ctx.progress(1 if color == "ok" else 0, message.split(":")[0],

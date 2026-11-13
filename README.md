@@ -52,7 +52,9 @@ sudo automatically.
 
 - **USB-MTP** starts the installed `usb-mtp` service.
 - **USB Storage** selects an existing `.img` from `~/Images/` or
-  creates a uniquely named 1, 4, 8, 16 or 32 GiB image there. New images
+  creates a 1, 4, 8, 16 or 32 GiB image there, named `SIZE-YYYYMMDD-index.img`
+  (for example `4G-20261112-0.img`). The index starts at 0 and skips existing
+  names without overwriting them. New images
   contain one MBR partition formatted as FAT32, exFAT, ext4 or NTFS. Space is
   allocated upfront; failed or cancelled creation removes partial files.
   Reopen the form to refresh its image list.
@@ -63,6 +65,8 @@ These folders are outside the project directory. When launched with `sudo`,
 the apps use the invoking user's home and give that user ownership of newly
 created storage images. Move existing files from `~/cyberdeckji/Images/` and
 `~/cyberdeckji/ISO/` into `~/Images/` and `~/ISO/` respectively.
+Backups use `~/Backups/` beside these folders, including when launched with
+`sudo`; backup and restore tools share that location.
 
 The storage apps update `/etc/default/usb-massstorage` and start the installed
 `usb-massstorage` service. They set `USB_MASS_STORAGE_MODE` and
@@ -200,8 +204,9 @@ Most need read/write access to `/dev/sdX` or `/dev/mmcblkN` (usually root).
   256 MiB (leaving 16 MiB free), deletes it, and always unmounts. The write test
   is skipped when the partition has less than 32 MiB free or there is no
   mountable partition. Results are shown as graphs, and USB 2.0 limits speed.
-- **Fake capacity check** runs `f3probe --time-ops` in its default
-  non-destructive mode, which restores every block it writes, to detect
+- **Fake capacity check** runs `f3probe --min-memory --time-ops`, trading speed
+  for lower RAM usage, in its default non-destructive mode, which restores every
+  block it writes, to detect
   counterfeit drives. Cancelling or unplugging during the probe can leave
   blocks unrestored.
 

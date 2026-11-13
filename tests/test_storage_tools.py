@@ -344,7 +344,8 @@ class FakeCapacityTests(StorageFixture):
                 patch.object(ctx, "run", return_value=RunResult(
                     0, ["Good news: The device `/dev/sda' is the real thing"])) as run:
             fake_capacity.fake_capacity(ctx)
-        self.assertEqual(run.call_args.args[0], ["/t/f3probe", "--time-ops", str(self.dev / "sda")])
+        self.assertEqual(run.call_args.args[0],
+                         ["/t/f3probe", "--min-memory", "--time-ops", str(self.dev / "sda")])
         self.assertNotEqual(ctx.status, "error")
 
 

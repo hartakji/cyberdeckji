@@ -17,6 +17,7 @@ import sys
 import time
 
 from deckfw import Choice, Form
+from apps._user_paths import directory
 
 
 SYS_BLOCK = Path("/sys/class/block")
@@ -426,7 +427,7 @@ def empty_form():
 
 
 def backup_dir():
-    return Path.home() / "Backups"
+    return directory("Backups")
 
 
 def sync_device(ctx, fd, name):

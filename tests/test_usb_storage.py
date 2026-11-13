@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import pwd
+from datetime import datetime
 import subprocess
 import tempfile
 import time
@@ -149,10 +150,10 @@ class UsbStorageTests(unittest.TestCase):
                     part.write(b"filesystem")
             return context.RunResult(0, [])
 
-        for filesystem, part_type, formatter in (
+        for index, (filesystem, part_type, formatter) in enumerate((
             ("FAT32", "fat32", "mkfs.fat"), ("exFAT", "ntfs", "mkfs.exfat"),
             ("ext4", "ext4", "mkfs.ext4"), ("NTFS", "ntfs", "mkfs.ntfs"),
-        ):
+        )):
             calls.clear()
             ctx = context.Context(context.AppSpec("Storage", lambda ctx: None))
             user = pwd.struct_passwd(("user", "x", 1234, 5678, "",
@@ -160,8 +161,15 @@ class UsbStorageTests(unittest.TestCase):
             with patch.object(usb_storage, "GIB", size), \
                  patch.object(usb_storage, "run_tool", side_effect=fake_tool), \
                  patch.object(usb_storage, "invoking_user", return_value=user), \
+                 patch.object(usb_storage, "datetime") as clock, \
                  patch.object(os, "chown") as chown:
+                clock.now.return_value = datetime(2026, 11, 12)
                 path, actual = usb_storage.create_image(ctx, 1, filesystem)
+            self.assertEqual(path.name, f"1G-20261112-{index}.img")
+            for existing in path.parent.glob("*.img"):
+                with existing.open("rb") as image:
+                    image.seek(1024 * 1024)
+                    self.assertEqual(image.read(10), b"filesystem")
             self.assertEqual(chown.call_args.args[1:], (1234, 5678))
             if filesystem == "FAT32":
                 self.assertEqual(chown.call_args_list[0].args,

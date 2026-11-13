@@ -1,18 +1,18 @@
 """USB mass-storage and CD-ROM gadget apps."""
 
 import errno
+from datetime import datetime
 import os
 from pathlib import Path
-import pwd
 import re
 import shlex
 import shutil
 import stat
 import tempfile
-import uuid
 
 from deckfw import app, Choice, Form
 from apps import _usb_otg
+from apps._user_paths import directory, invoking_user
 
 
 SERVICE = "usb-massstorage"
@@ -27,18 +27,6 @@ FORMATS = {
     "NTFS": ("ntfs", ["mkfs.ntfs", "-F", "-Q", "-p",
                       str(PARTITION_START // 512)]),
 }
-
-
-def invoking_user():
-    if os.geteuid() == 0 and "SUDO_UID" in os.environ:
-        return pwd.getpwuid(int(os.environ["SUDO_UID"]))
-    return None
-
-
-def directory(kind):
-    user = invoking_user()
-    home = Path(user.pw_dir) if user is not None else Path.home()
-    return home / kind
 
 
 def choices(kind, suffix):
@@ -145,7 +133,7 @@ def create_image(ctx, size_gib, filesystem):
     if shutil.disk_usage(folder).free < size:
         raise ValueError("Not enough free space for the requested image.")
     partition_type, formatter = FORMATS[filesystem]
-    target = folder / f"usb-{uuid.uuid4().hex}.img"
+    prefix = f"{size_gib}G-{datetime.now():%Y%m%d}"
     image = partition = None
     try:
         fd, name = tempfile.mkstemp(prefix=".usb-image-", suffix=".partial", dir=folder)
@@ -180,7 +168,15 @@ def create_image(ctx, size_gib, filesystem):
         ctx.check()
         if user is not None:
             os.chown(image, user.pw_uid, user.pw_gid)
-        os.link(image, target)
+        index = 0
+        while True:
+            ctx.check()
+            target = folder / f"{prefix}-{index}.img"
+            try:
+                os.link(image, target)
+                break
+            except FileExistsError:
+                index += 1
         ctx.log(f"Created {target.name}.", color="ok")
         return target, size
     finally:
