@@ -401,6 +401,70 @@ An error stops refresh and shows its diagnostic; previous results are explicitly
 marked **STALE**. Press B to return to setup and run again. On a non-Linux
 desktop the entry is visible but explains that Linux is required.
 
+## Wifi Deauth demo (Linux)
+
+Open **Apps > Network > Wifi Deauth**. Choose one detected adapter, a 2.4/5 GHz
+band filter and a refresh interval (5..120 seconds, default 15). The first table
+uses the Wi-Fi scanner's **real NetworkManager AP discovery**. Scans may send
+discovery probes; this step is not an offline simulation. Up/Down highlights an
+AP, Left/Right scrolls columns, and **A** retains its ESSID, BSSID, channel and
+actual band.
+
+Subsequent stages are a **DEMO**, not a deauthentication implementation.
+The app invokes the existing system commands **`monairng`**, **`monsniff`**,
+**`kickerscript`**, and **`monairngreverse`** directly from PATH, without a Python
+interpreter wrapper. Install executable **simulation scripts** with these names;
+the repository does not provide replacements, capture client traffic, switch
+radio mode, or send disconnect packets. The UI cannot verify what an external
+script does: do not point it at real attack tools.
+
+`monairng` simulates activation, then `monsniff` supplies invented clients in a
+selectable MAC/name/signal table, refreshed at the chosen interval. **A** starts
+`kickerscript` for one synthetic client and keeps it running with the gathered
+parameters until stopped. **B** stops that process before returning to clients;
+B again returns to APs. From APs, B cancels the app and runs `monairngreverse`;
+after cleanup, B returns to setup. Launcher shutdown and failures also trigger
+cleanup after active work stops. There is no cleanup on ordinary table-back
+navigation. No activation attempt means no reverse command.
+
+### System demo command contract
+
+The installed scripts' original CLI/output was not available during development.
+This integration expects the following contract; adapt simulation scripts to it
+or update the adapter functions in `apps/wifi_deauth.py` to their actual usage.
+All four commands must be present before starting. Resolved executable paths are
+retained for the session, including cleanup, and nonzero exits or malformed output
+are errors rather than an empty/successful result.
+
+Each command receives separate `--key=value` arguments:
+
+```text
+--interface=wlan0 --band=5 --channel=36 --bssid=02:00:00:00:00:AB --essid=Example
+```
+
+`kickerscript` additionally receives `--client=02:DE:AD:00:00:01`. ESSIDs are
+passed unchanged, including an empty value for hidden networks. These are argv
+elements, not a shell command string: scripts must treat values as data.
+
+Commands write UTF-8 JSON, one object per line, to stdout. Each object includes
+`"demo": true`, `"event"`, and `"target"` echoing all passed parameters (channel
+is a JSON integer; other values are strings). Example `monsniff` output:
+
+```json
+{"demo":true,"event":"clients","target":{"interface":"wlan0","band":"5","channel":36,"bssid":"02:00:00:00:00:AB","essid":"Example"},"clients":[{"mac":"02:DE:AD:00:00:01","name":"Demo phone","signal":82}]}
+```
+
+`monairng` emits one `monitor_started` event and exits successfully. `monsniff`
+emits one `clients` event (an empty list is allowed) and exits. `monairngreverse`
+emits one `monitor_stopped` event and exits; make restoration idempotent.
+These one-shot commands have a five-second timeout; timed-out processes are
+stopped and reaped before proceeding. `kickerscript` keeps running and emits `kick` events with nonnegative
+integer `elapsed` (seconds) and `ticks` (fake cycles), plus the echoed target
+including `client`. It must stop on SIGTERM, as must any children it starts.
+Keep one-shot commands short-lived; cleanup cannot proceed until active work
+has unwound. Do not emit other diagnostic text on successful runs (the runner
+merges stdout/stderr); use a nonzero exit with a diagnostic on failure.
+
 ## Documentation
 
 | Guide | Purpose |

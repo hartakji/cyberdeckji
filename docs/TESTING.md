@@ -54,6 +54,7 @@ executable examples whose behavior needs checking.
 | `tests/test_forms.py` | Setup lifecycle, controller/keyboard editing, same-frame input routing, small-screen rendering, vertical alignment |
 | `tests/test_parameter_examples.py` | Real demo/ping/shell sample contracts without actual network traffic |
 | `tests/test_wifi_scanner.py` | Escaped nmcli output, band filtering, setup/command errors, stale snapshots, scrolling and subprocess cancellation without real wireless scans |
+| `tests/test_wifi_deauth.py` | System demo command resolution/contracts, immutable AP/client selection, table/back navigation, kick-process cancellation before cleanup, failure reporting and reduced-body handheld layouts using temporary executable stubs |
 | `tests/test_quickshare.py` | Owner/form selection, NetworkManager commands, interface claims, nftables guard, route conflicts, restoration/failure/cancellation and small-screen dashboard without real network changes |
 | `tests/test_quickshare_http.py` | Loopback HTTP streaming, uploads/downloads, filename collisions, origin/framing checks, symlink/path boundaries, disk reserve, interrupted transfers and privilege-drop ordering |
 | `tests/test_port_scanner.py` | Local interface choices, ARP/XML parsing, TCP ranges, selectable tables, result/back navigation, errors and stub process cancellation/temporary XML cleanup |
@@ -107,6 +108,26 @@ refresh and B cancellation. Permission, rfkill and driver restrictions should
 be checked there. Never run real discovery merely to validate parsing on a
 developer machine. Official command behavior is
 documented in the [nmcli manual](https://networkmanager.dev/docs/api/latest/nmcli.html).
+
+### Wifi Deauth demo checks
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  PYGAME_HIDE_SUPPORT_PROMPT=1 \
+  python3 -m unittest discover -s tests -p 'test_wifi*.py' -v
+```
+
+Demo tests mock real AP discovery and run only temporary command stubs, never
+the host's installed network tools. They cover the documented JSON/argument
+contract, not the unknown native interface of separately installed scripts.
+On the handheld, use only simulation implementations of `monairng`, `monsniff`,
+`kickerscript`, and `monairngreverse` matching the README contract. Confirm that
+AP selection preserves ESSID/BSSID/channel/band, clients are visibly invented,
+B from the kick screen stops that process before returning to clients, B from
+clients returns to APs without cleanup, and leaving APs runs reverse cleanup
+once. Also check launcher exit, command failure, adapter removal, missing
+scripts, and both 320x240/640x480 layouts. Do not substitute actual
+deauthentication or monitor-mode tools for demo scripts.
 
 ### QuickShare deployment smoke check
 
