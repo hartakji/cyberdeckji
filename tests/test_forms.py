@@ -252,6 +252,24 @@ class FormScreenTests(unittest.TestCase):
                 editor.selected = selected
                 editor.draw(surface, body, theme)
 
+    def test_compact_host_keyboard_fits_without_scrolling(self):
+        field = Text("host", "IP / Host", default="1.1.1.1", format="host")
+        editor = TextEditor(field, field.default, lambda value: None)
+        for size in ((320, 240), (640, 480)):
+            with self.subTest(size=size):
+                surface = pygame.Surface(size)
+                theme = Theme(*size)
+                body = pygame.Rect(0, 30, size[0], size[1] - 60)
+                rendered = []
+
+                def capture_label(label, *args, **kwargs):
+                    rendered.append(label.text)
+
+                with patch.object(Label, "draw", autospec=True,
+                                  side_effect=capture_label):
+                    editor.draw(surface, body, theme)
+                self.assertTrue(all(key in rendered for key in editor.keys))
+
     def test_labels_center_vertically_without_changing_default_alignment(self):
         for size in ((320, 240), (640, 480)):
             theme = Theme(*size)

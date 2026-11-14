@@ -248,7 +248,7 @@ class TextEditor(Screen):
     def draw(self, surf, rect, theme):
         pad, line = theme.pad, theme.f_small.get_linesize()
         Label(self.field.label, size="small", valign="center").draw(
-            surf, pygame.Rect(rect.x + pad, rect.y, rect.w - 2 * pad, line + pad), theme)
+            surf, pygame.Rect(rect.x + pad, rect.y, rect.w - 2 * pad, line + 2), theme)
         # Keep the insertion cursor visible even for long text.
         before = self.value[:self.cursor]
         available = max(1, rect.w - 4 * pad)
@@ -256,10 +256,10 @@ class TextEditor(Screen):
             before = before[1:]
         shown = before + "|" + self.value[self.cursor:]
         Label(shown, size="small", valign="center").draw(
-            surf, pygame.Rect(rect.x + pad, rect.y + line + pad,
-                              rect.w - 2 * pad, line + pad), theme)
-        start = rect.y + 2 * (line + pad)
-        cell_h = max(20, (rect.bottom - start - 2 * line) // 7)
+            surf, pygame.Rect(rect.x + pad, rect.y + line + 2,
+                              rect.w - 2 * pad, line + 2), theme)
+        start = rect.y + 2 * (line + 2)
+        cell_h = max(13, line + 2)
         rows = max(1, (rect.bottom - start - 2 * line) // cell_h)
         top = max(0, self.selected // 8 - rows + 1)
         cell_w = max(1, (rect.w - 2 * pad) // 8)
