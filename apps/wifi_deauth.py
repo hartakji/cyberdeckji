@@ -486,8 +486,9 @@ def capture_clients(ctx, view, session):
 
 def kick(ctx, view, session):
     ap, client = view.state.ap, view.state.client
-    # if broarcast then client == BROADCAST
-    argv = ["aireplay-ng", "--deauth", "0", session.monitor, "-a", ap.bssid, "-c", client.mac]
+    argv = ["aireplay-ng", "--deauth", "0", session.monitor, "-a", ap.bssid]
+    if client != BROADCAST:
+        argv.extend(["-c", client.mac])
     task = ScriptTask(ctx.spec, argv, stream=True)
     try:
         while True:
