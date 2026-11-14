@@ -1,4 +1,5 @@
 from dataclasses import replace
+import io
 import json
 import os
 from pathlib import Path
@@ -6,7 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pygame
 
@@ -17,7 +18,8 @@ from deckfw.menu import default_menu
 from deckfw.runner import Runner
 from deckfw.screens import AppScreen, Navigator, Screen
 from deckfw.theme import Theme
-from apps._wifi_scan import AccessPoint, Snapshot, scan as real_scan
+from apps._wifi_scan import AccessPoint, Snapshot
+from tools import airodump_clients as scanner
 
 with patch.object(context, "_REGISTRY", []):
     from apps import wifi_deauth as demo
@@ -25,133 +27,207 @@ with patch.object(context, "_REGISTRY", []):
 
 AP = AccessPoint("--Example: Wi\\Fi; $(not-a-command)", "WPA2",
                  "02:00:00:00:00:AB", 36, 5180, 90)
-CLIENT = demo.Client("02:DE:AD:00:00:01", "Demo phone", 82)
+CLIENT = demo.Client("12:DE:AD:00:00:01", -45, 10)
+ADDRESS = "02:00:00:00:00:01"
+TARGET = {"interface": "wlan0mon", "bssid": AP.bssid, "channel": AP.channel}
+
+
+def event(clients=None, target=None):
+    return {"event": "clients", "source": "airodump-ng", "target": target or TARGET,
+            "clients": clients if clients is not None else [
+                {"mac": CLIENT.mac, "power_dbm": CLIENT.power_dbm, "packets": CLIENT.packets}]}
+
+
+def iw_lines(name="wlan0", mode="managed", index=3, phy=0):
+    return [f"phy#{phy}", f"\tInterface {name}", f"\t\tifindex {index}",
+            f"\t\taddr {ADDRESS}", f"\t\ttype {mode}"]
 
 
 def system_stubs(directory):
-    """Test executables only; production supplies these commands separately."""
-    for name, event in (("monairng", "monitor_started"), ("monsniff", "clients"),
-                        ("kickerscript", "kick"), ("monairngreverse", "monitor_stopped")):
-        script = Path(directory) / name
+    root = Path(directory)
+    state = root / "state.json"
+    state.write_text("{}")
+    frame = (
+        "\x1b[2;1H CH 36 ][ Elapsed: 0 s\x1b[0K\n"
+        " BSSID PWR Beacons ESSID\x1b[0K\n"
+        f" {AP.bssid} -30 20 Example\x1b[0K\n"
+        " BSSID              STATION            PWR    Rate    Lost   Frames  Notes  Probes"
+        "\x1b[0K\n"
+        f" {AP.bssid}  {CLIENT.mac}   -45    6e- 1     0       10        \x1b[0K\n"
+        "\x1b[0J")
+    for name in ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip"):
+        script = root / name
         script.write_text(
             f"#!{sys.executable}\n"
-            "import json, sys, time\n"
-            "target = dict(arg[2:].split('=', 1) for arg in sys.argv[1:])\n"
-            "target['channel'] = int(target['channel'])\n"
-            f"event = {event!r}\n"
-            "data = {'demo': True, 'event': event, 'target': target}\n"
-            "if event == 'clients':\n"
-            "    data['clients'] = [\n"
-            "        {'mac': '02:DE:AD:00:00:01', 'name': 'Demo phone', 'signal': 82},\n"
-            "        {'mac': '02:DE:AD:00:00:02', 'name': 'Demo laptop', 'signal': 65}]\n"
-            "if event == 'kick':\n"
-            "    data.update(elapsed=1, ticks=1)\n"
-            "print(json.dumps(data), flush=True)\n"
-            "if event == 'kick': time.sleep(30)\n"
+            "import json, os, signal, sys, time\n"
+            "from pathlib import Path\n"
+            "root = Path(__file__).parent\n"
+            "name = Path(__file__).name\n"
+            "state = json.loads((root / 'state.json').read_text())\n"
+            "def log(value):\n"
+            "    with (root / 'events').open('a') as f: f.write(value + '\\n')\n"
+            "log(name + ' ' + ' '.join(sys.argv[1:]))\n"
+            "if name == 'iw':\n"
+            "    if state.get('removed'): sys.exit(0)\n"
+            "    mode = 'monitor' if state.get('monitor') else state.get('initial_mode', 'managed')\n"
+            "    iface = 'wlan0mon' if mode == 'monitor' and not state.get('same_name') else 'wlan0'\n"
+            "    print('phy#0\\n\\tInterface ' + iface + '\\n\\t\\tifindex 3\\n'\n"
+            f"          '\\t\\taddr {ADDRESS}\\n\\t\\ttype ' + mode)\n"
+            "    if state.get('shared'):\n"
+            f"        print('phy#0\\n\\tInterface extra\\n\\t\\tifindex 4\\n\\t\\taddr {ADDRESS}\\n\\t\\ttype managed')\n"
+            "elif name == 'airmon-ng':\n"
+            "    starting = sys.argv[1] == 'start'\n"
+            "    if not starting and (root / 'capturing').exists():\n"
+            "        print('capture still running'); sys.exit(9)\n"
+            "    if not starting and state.get('stop_fail'):\n"
+            "        print('restoration denied'); sys.exit(7)\n"
+            "    if starting or not state.get('stop_noop'): state['monitor'] = starting\n"
+            "    state['up'] = False\n"
+            "    (root / 'next.json').write_text(json.dumps(state))\n"
+            "    (root / 'next.json').replace(root / 'state.json')\n"
+            "    if starting and state.get('start_fail'):\n"
+            "        print('activation denied after mutation'); sys.exit(7)\n"
+            "    if starting and state.get('start_sleep'): time.sleep(30)\n"
+            "elif name == 'ip':\n"
+            "    if sys.argv[1] == '-j':\n"
+            "        print(json.dumps([{'ifname': 'wlan0', 'flags': ['UP'] if state.get('up', True) else []}]))\n"
+            "    else:\n"
+            "        state['up'] = sys.argv[-1] == 'up'\n"
+            "        (root / 'next.json').write_text(json.dumps(state))\n"
+            "        (root / 'next.json').replace(root / 'state.json')\n"
+            "elif name == 'airodump-ng':\n"
+            "    marker = root / 'capturing'\n"
+            "    try:\n"
+            "        marker.write_text(str(os.getpid()))\n"
+            "        while True:\n"
+            "            if state.get('capture_bad'): os.write(1, b'\\x1b[2;1Hbad\\x1b[0J')\n"
+            "            elif not state.get('capture_silent'):\n"
+            f"                os.write(1, {frame.encode()!r})\n"
+            "            time.sleep(0.1)\n"
+            "    except KeyboardInterrupt:\n"
+            "        pass\n"
+            "    finally:\n"
+            "        if marker.exists(): marker.unlink()\n"
+            "        log('capture_stopped')\n"
         )
-        script.chmod(0o755)
-    return {name: str(Path(directory) / name) for name in demo.COMMANDS}
+        script.chmod(0o700)
+    wrapper = root / "scanner.py"
+    wrapper.write_text(
+        "import runpy, sys\nsys.platform = 'linux'\n"
+        f"runpy.run_path({str(demo.SCANNER)!r}, run_name='__main__')\n")
+    return {name: str(root / name) for name in ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip")}
 
 
 class ContractTests(unittest.TestCase):
-    def test_form_detects_one_adapter_and_validates_scanner_limits(self):
+    def test_setup_and_tool_resolution(self):
         with patch.object(demo, "wireless_interfaces", return_value=("wlan0", "wlan1")):
             form = demo.setup()
         self.assertEqual(form.defaults(), {"interface": "wlan0", "band": "both", "interval": 15})
-        self.assertEqual(form.fields[0].adjust("wlan0", 1), "wlan1")
-        self.assertEqual(form.validate({"interface": "wlan1", "band": "5", "interval": 5}),
-                         {"interface": "wlan1", "band": "5", "interval": 5})
         for key, value in (("interface", ""), ("band", "6"), ("interval", 4), ("interval", 121)):
-            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+            with self.subTest(key=key), self.assertRaises(ValueError):
                 form.validate({**form.defaults(), key: value})
+        with patch.object(demo.shutil, "which", side_effect=lambda name: "/stub/" + name):
+            self.assertEqual(set(demo.resolve_commands()),
+                             {"nmcli", "airmon-ng", "iw", "airodump-ng", "ip"})
+        with patch.object(demo.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "Missing command"):
+                demo.resolve_commands()
 
-    def test_system_scripts_round_trip_all_parameters_and_hidden_essid(self):
-        with tempfile.TemporaryDirectory() as directory:
-            commands = system_stubs(directory)
-            ctx = context.Context(context.AppSpec("Demo", lambda ctx: None))
-            ctx.wifi_deauth_session = demo.Session("wlan0", commands)
-            for ap in (AP, replace(AP, ssid="")):
-                values = demo.parameters("wlan0", ap)
-                for name, expected in (("monairng", "monitor_started"),
-                                       ("monsniff", "clients"), ("monairngreverse", "monitor_stopped")):
-                    data = demo.helper(ctx, name, values, expected)
-                    self.assertEqual(data["target"], values)
-                    if name == "monsniff":
-                        clients = demo.clients_from(data)
-                        self.assertEqual(len(clients), 2)
-                        self.assertTrue(all(client.name.startswith("Demo ") for client in clients))
-            with self.assertRaisesRegex(ValueError, "Unknown demo helper"):
-                demo.helper_command("/usr/bin/real-command", values, commands)
-            with patch.object(context.Context, "run",
-                              return_value=context.RunResult(7, ["failed to simulate"])), \
-                    self.assertRaisesRegex(ValueError, "monairng failed \\(7\\).*failed to simulate"):
-                demo.helper(ctx, "monairng", values, "monitor_started")
+    def test_scanner_output_round_trips_into_app(self):
+        output = io.StringIO()
+        scanner.emit({CLIENT.mac: scanner.Client(CLIENT.mac, None, 10)}, TARGET, output)
+        self.assertEqual(demo.clients_from(output.getvalue(), TARGET),
+                         (replace(CLIENT, power_dbm=None),))
+        self.assertEqual(demo.clients_from(json.dumps(event([])), TARGET), ())
 
-    def test_system_resolution_requires_all_commands_and_keeps_absolute_paths(self):
-        with tempfile.TemporaryDirectory() as directory:
-            commands = system_stubs(directory)
-            with patch.dict(os.environ, {"PATH": directory}):
-                self.assertEqual(demo.resolve_commands(), commands)
-                (Path(directory) / "monairngreverse").unlink()
-                with self.assertRaisesRegex(ValueError, "Missing system demo command: monairngreverse"):
-                    demo.resolve_commands()
+    def test_malformed_wrong_target_and_synthetic_events_are_rejected(self):
+        valid = event()
+        for data in ({}, [], {**valid, "source": "demo"}, {**valid, "event": "kick"},
+                     {**valid, "target": {**TARGET, "channel": 1}},
+                     {**valid, "target": "bad"}, {**valid, "clients": None}):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                demo.clients_from(json.dumps(data), TARGET)
+        record = valid["clients"][0]
+        for clients in ([None], [record, record], [{**record, "mac": "bad"}],
+                        [{**record, "mac": demo.BROADCAST.mac}],
+                        [{**record, "mac": AP.bssid}], [{**record, "packets": True}],
+                        [{**record, "power_dbm": True}], [{**record, "power_dbm": 10}],
+                        [{**record, "packets": -1}]):
+            with self.subTest(clients=clients), self.assertRaises(ValueError):
+                demo.clients_from(json.dumps(event(clients)), TARGET)
+        with self.assertRaisesRegex(ValueError, "invalid JSON"):
+            demo.clients_from("permission denied", TARGET)
 
-    def test_malformed_demo_output_is_not_accepted(self):
-        values = demo.parameters("wlan0", AP)
-        valid = {"demo": True, "event": "clients", "target": values}
-        for data in ({}, [], {**valid, "demo": False}, {**valid, "event": "kick"},
-                     {**valid, "target": {**values, "channel": 1}}):
-            with self.subTest(data=data), self.assertRaisesRegex(ValueError, "invalid demo"):
-                demo.event(json.dumps(data), "clients", values)
-        with self.assertRaisesRegex(ValueError, "invalid demo JSON"):
-            demo.event("not json", "clients", values)
-        client = {"mac": CLIENT.mac, "name": CLIENT.name, "signal": CLIENT.signal}
-        for clients in (None, {}, [None], [client, client], [{**client, "mac": "bad"}],
-                        [{**client, "signal": True}], [{**client, "signal": 101}],
-                        [{**client, "name": ""}]):
-            with self.subTest(clients=clients), self.assertRaisesRegex(ValueError, "synthetic client"):
-                demo.clients_from({"clients": clients})
-        self.assertEqual(demo.clients_from({"clients": []}), ())
-        ctx = context.Context(context.AppSpec("Demo", None))
-        ctx.wifi_deauth_session = demo.Session("wlan0", {name: "/" + name for name in demo.COMMANDS})
-        with patch.object(context.Context, "run", return_value=context.RunResult(0, [])), \
-                self.assertRaisesRegex(ValueError, "expected one demo event"):
-            demo.helper(ctx, "monsniff", values, "clients")
+    def test_iw_interface_parser_rejects_incomplete_and_duplicate_information(self):
+        self.assertEqual(demo.interfaces_from(iw_lines()),
+                         [demo.Interface("wlan0", 0, 3, "managed", ADDRESS)])
+        for lines in (iw_lines()[:-1], ["Interface wlan0"], ["phy#bad"],
+                      iw_lines() + iw_lines(), iw_lines(name="wlan0;bad"),
+                      iw_lines(index=-1)):
+            with self.subTest(lines=lines), self.assertRaises(ValueError):
+                demo.interfaces_from(lines)
 
-    def test_discovery_has_one_demo_and_one_scanner_without_helper_shortcuts(self):
+    def test_cleanup_refuses_replaced_monitor_or_unstopped_capture(self):
+        original = demo.Interface("wlan0", 0, 3, "managed", ADDRESS)
+        monitor = replace(original, name="wlan0mon", index=4, mode="monitor")
+        session = demo.Session("wlan0", {}, original=original, monitor="wlan0mon",
+                               monitor_device=monitor, activation_attempted=True)
+        ctx = Mock()
+        with patch.object(session, "devices", return_value=[replace(monitor, index=5)]), \
+                patch.object(demo, "command") as command:
+            with self.assertRaisesRegex(ValueError, "changed externally"):
+                session.restore(ctx)
+            command.assert_not_called()
+        session.capture_task = Mock()
+        session.capture_task.stop.side_effect = RuntimeError("still running")
+        with patch.object(session, "devices") as devices:
+            with self.assertRaisesRegex(RuntimeError, "still running"):
+                session.restore(ctx)
+            devices.assert_not_called()
+        self.assertTrue(session.activation_attempted)
+
+    def test_selection_uses_mac_even_when_queued_measurements_are_old(self):
+        ctx = context.Context(context.AppSpec("Wifi Deauth", None))
+        view = demo.DemoView()
+        updated = replace(CLIENT, packets=20)
+        view.transition("clients", ap=AP, clients=(demo.BROADCAST, updated))
+        view.requests.put((view.state.generation, "client", CLIENT))
+        session = demo.Session("wlan0", {}, monitor="wlan0mon")
+        with patch.object(demo, "ScriptTask") as task:
+            self.assertEqual(demo.capture_clients(ctx, view, session), ("client", updated))
+            task.return_value.stop.assert_called_once_with()
+        self.assertIsNone(session.capture_task)
+
+    def test_discovery_keeps_one_app_and_existing_menu_placement(self):
         root = str(Path(__file__).resolve().parents[1])
         with patch.object(context, "_REGISTRY", []):
             specs = discover(root, DEFAULTS)
-        names = [spec.name for spec in specs]
-        self.assertEqual(names.count("Wifi Deauth"), 1)
-        self.assertEqual(names.count("Wi-Fi scanner"), 1)
-        self.assertFalse(any(name in names for name in
-                             ("Monairng", "Monsniff", "Kickerscript", "Monairngreverse")))
         spec = next(spec for spec in specs if spec.name == "Wifi Deauth")
+        self.assertEqual(sum(spec.name == "Wifi Deauth" for spec in specs), 1)
         self.assertEqual(spec.source, "native")
+        self.assertIsNotNone(spec.shutdown)
         network = next(item for item in default_menu(specs).items[0].menu.items
                        if item.label == "Network")
         self.assertTrue(any(item.spec is spec for item in network.menu.items))
-        self.assertIsNotNone(spec.shutdown)
 
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
         self.commands = system_stubs(temporary.name)
         self.runners = []
-        self.calls = []
         self.nav = Navigator()
         self.nav.push(Screen())
         self.addCleanup(self.nav.close_all)
         for patcher in (
             patch.object(demo, "wireless_interfaces", return_value=("wlan0",)),
-            patch.object(demo.shutil, "which", side_effect=lambda name:
-                         "/stub/nmcli" if name == "nmcli" else self.commands.get(name)),
+            patch.object(demo.shutil, "which", side_effect=self.commands.get),
+            patch.dict(os.environ, {"PATH": str(self.root) + os.pathsep + os.environ.get("PATH", "")}),
+            patch.object(demo, "SCANNER", self.root / "scanner.py"),
             patch.object(demo, "scan", return_value=(AP,)),
             patch("deckfw.context.Runner", side_effect=self.runner),
-            patch.object(demo, "helper", side_effect=self.helper),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -161,17 +237,20 @@ class LifecycleTests(unittest.TestCase):
         self.runners.append(runner)
         return runner
 
-    # Retain the real implementation before setUp patches its module binding.
-    real_helper = staticmethod(demo.helper)
+    def state(self, **values):
+        path = self.root / "state.json"
+        state = json.loads(path.read_text())
+        if values:
+            state.update(values)
+            path.write_text(json.dumps(state))
+        return state
 
-    def helper(self, ctx, name, values, expected):
-        self.calls.append((name, dict(values)))
-        if name == "monairngreverse":
-            self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
-        return self.real_helper(ctx, name, values, expected)
+    def events(self):
+        path = self.root / "events"
+        return path.read_text().splitlines() if path.exists() else []
 
-    def wait(self, predicate, message="Demo did not become ready"):
-        deadline = time.monotonic() + 5
+    def wait(self, predicate, message="App did not become ready"):
+        deadline = time.monotonic() + 6
         while not predicate():
             self.assertLess(time.monotonic(), deadline, message)
             time.sleep(0.01)
@@ -187,213 +266,197 @@ class LifecycleTests(unittest.TestCase):
 
     def clients(self, screen, view):
         screen.action("a")
-        self.wait(lambda: view.state.phase == "clients" and bool(view.state.clients))
+        self.wait(lambda: (view.state.phase == "clients" and len(view.state.clients) > 1)
+                  or not screen.alive, "Client capture did not become ready")
+        self.assertTrue(screen.alive, screen.ctx.error)
+        self.assertEqual(view.state.clients, (demo.BROADCAST, CLIENT))
 
-    def kicking(self, screen, view):
-        screen.action("a")
-        self.wait(lambda: any(runner.cmd[0] == self.commands["kickerscript"] and runner.total > 0
-                              for runner in self.runners))
-        self.assertEqual(view.state.phase, "kick")
-        return next(runner for runner in reversed(self.runners)
-                    if runner.cmd[0] == self.commands["kickerscript"])
+    def close(self, screen):
+        screen.close()
+        screen._thread.join(6)
+        self.assertFalse(screen.alive)
+        self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
 
-    def test_navigation_keeps_parameters_and_reaps_kick_before_cleanup(self):
+    def test_same_adapter_capture_selection_simulation_resume_and_restoration(self):
         screen, view = self.start()
-        demo.scan.assert_called_once_with(screen.ctx, "/stub/nmcli", "wlan0", "both")
         self.clients(screen, view)
-        self.assertEqual(view.state.ap, AP)
-        self.assertEqual(self.calls[0], ("monairng", demo.parameters("wlan0", AP)))
+        self.assertEqual(screen.ctx.wifi_deauth_session.monitor, "wlan0mon")
+        self.assertIn("airmon-ng start wlan0 36", self.events())
+        self.assertEqual(demo.scan.call_count, 1)
         screen.action("down")
-        client = view.state.clients[1]
-        runner = self.kicking(screen, view)
-        self.assertEqual(runner.cmd, demo.helper_command(
-            "kickerscript", demo.parameters("wlan0", AP, client), self.commands))
+        screen.action("a")
+        self.wait(lambda: view.state.phase == "kick")
+        self.assertEqual(view.state.client, CLIENT)
+        self.assertFalse((self.root / "capturing").exists())
+        self.assertEqual(self.events()[-1], "capture_stopped")
+        runner_count = len(self.runners)
+        time.sleep(0.1)
+        self.assertEqual(len(self.runners), runner_count)
+        self.assertEqual(demo.scan.call_count, 1)
         screen.action("b")
-        self.wait(lambda: view.state.phase == "clients")
-        self.assertIsNotNone(runner._proc.poll())
-        self.assertFalse(screen.ctx.cancelled)
-        self.assertNotIn("monairngreverse", [name for name, _ in self.calls])
-        screen.action("b")
-        self.wait(lambda: view.state.phase == "networks")
-        self.assertFalse(screen.ctx.cancelled)
-        self.clients(screen, view)
-        self.assertEqual([name for name, _ in self.calls].count("monairng"), 2)
+        self.wait(lambda: view.state.phase == "clients" and (self.root / "capturing").exists())
         screen.action("b")
         self.wait(lambda: view.state.phase == "networks")
+        self.assertFalse(self.state()["monitor"])
+        self.assertTrue(self.state()["up"])
+        self.assertFalse(screen.ctx.wifi_deauth_session.activation_attempted)
+        events = self.events()
+        stop = events.index("airmon-ng stop wlan0mon")
+        self.assertEqual(events[stop - 2], "capture_stopped")
+        self.wait(lambda: demo.scan.call_count == 2)
         screen.action("b")
-        screen._thread.join(3)
+        screen._thread.join(4)
         self.assertFalse(screen.alive)
-        self.assertEqual(screen.ctx.status, "cancelled")
-        self.assertIsNone(screen.ctx.wifi_deauth_session.monitor_ap)
-        self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
-        self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
-        self.assertTrue(all(runner.cmd[0] in self.commands.values() for runner in self.runners))
-        screen.action("b")
-        self.assertEqual(len(self.nav.stack), 1)
+        self.assertEqual(self.events().count("airmon-ng stop wlan0mon"), 1)
+        self.assertFalse(any("kick" in str(runner.cmd) for runner in self.runners))
 
-    def test_launcher_close_stops_kick_then_cleans_up_once(self):
-        screen, view = self.start()
-        self.clients(screen, view)
-        runner = self.kicking(screen, view)
-        self.nav.close_all()
-        self.assertFalse(screen.alive)
-        self.assertIsNotNone(runner._proc.poll())
-        self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
-
-    def test_external_cancel_does_not_trap_back_in_a_finished_view(self):
-        screen, view = self.start()
-        self.clients(screen, view)
-        runner = self.kicking(screen, view)
-        screen.close()
-        screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertIsNotNone(runner._proc.poll())
-        self.assertFalse(view.handles_back)
-        screen.action("b")
-        self.assertEqual(len(self.nav.stack), 1)
-
-    def test_initial_discovery_uses_existing_nmcli_scanner(self):
-        executable = Path(self.commands["monairng"]).with_name("nmcli")
-        fields = (AP.ssid, AP.security, AP.bssid, str(AP.channel), "5180 MHz", str(AP.signal))
-        record = ":".join(value.replace("\\", "\\\\").replace(":", "\\:") for value in fields)
-        executable.write_text(
-            f"#!{sys.executable}\nimport sys\n"
-            "if sys.argv[-1] == 'radio': print('enabled')\n"
-            "elif sys.argv[-2:] == ['device', 'status']: print('wlan0:wifi:disconnected')\n"
-            f"else: print({record!r})\n")
-        executable.chmod(0o755)
-        with patch.object(demo, "scan", side_effect=real_scan), \
-                patch.object(demo.shutil, "which", side_effect=lambda name:
-                             str(executable) if name == "nmcli" else self.commands.get(name)):
-            screen, view = self.start()
-            self.assertEqual(view.networks.snapshot.networks, (AP,))
-            network_command = self.runners[-1].cmd
-            self.assertEqual(network_command[-7:],
-                             ["device", "wifi", "list", "--rescan", "yes", "ifname", "wlan0"])
-            self.assertIn("SSID,SECURITY,BSSID,CHAN,FREQ,SIGNAL", network_command)
-            self.assertEqual(self.calls, [])
-            screen.close()
-            screen._thread.join(3)
-        self.assertFalse(screen.alive)
-
-    def test_cancel_before_activation_has_no_cleanup_command(self):
-        screen, _ = self.start()
-        screen.action("b")
-        screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertEqual(self.calls, [])
-
-    def test_missing_system_command_prevents_discovery_and_activation(self):
-        self.commands.pop("monairngreverse")
-        screen, view = self.start()
-        screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertEqual(screen.ctx.status, "error")
-        self.assertIn("Missing system demo command: monairngreverse", view.state.title)
-        self.assertEqual(self.calls, [])
-        self.assertEqual(self.runners, [])
-        demo.scan.assert_not_called()
-
-    def test_one_shot_timeout_stops_process_before_reverse_cleanup(self):
-        Path(self.commands["monairng"]).write_text(
-            f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
-
-        def timed(ctx, name, values, expected):
-            with patch.object(demo, "SCRIPT_TIMEOUT", 0.1 if name == "monairng" else 5):
-                return self.helper(ctx, name, values, expected)
-
-        with patch.object(demo, "helper", side_effect=timed):
-            screen, view = self.start()
-            screen.action("a")
-            screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertEqual(screen.ctx.status, "error")
-        self.assertIn("monairng timed out", screen.ctx.error)
-        self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
-        self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
-        self.assertIsNone(screen.ctx.wifi_deauth_session.monitor_ap)
-
-    def test_cancellation_during_activation_stops_before_reverse_cleanup(self):
-        Path(self.commands["monairng"]).write_text(
-            f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+    def test_broadcast_is_selectable_before_any_station_arrives(self):
+        self.state(capture_silent=True)
         screen, view = self.start()
         screen.action("a")
-        self.wait(lambda: any(runner.cmd[0] == self.commands["monairng"] for runner in self.runners))
-        screen.close()
-        screen._thread.join(3)
-        self.assertFalse(screen.alive)
+        self.wait(lambda: view.state.phase == "clients" and (self.root / "capturing").exists())
+        self.assertEqual(view.state.clients, (demo.BROADCAST,))
+        screen.action("a")
+        self.wait(lambda: view.state.phase == "kick")
+        self.assertEqual(view.state.client, demo.BROADCAST)
+        self.assertFalse((self.root / "capturing").exists())
+        self.close(screen)
+        self.assertFalse(self.state()["monitor"])
+
+    def test_shutdown_stops_capture_before_restoring_and_is_idempotent(self):
+        screen, view = self.start()
+        self.clients(screen, view)
+        self.close(screen)
+        self.assertFalse(self.state()["monitor"])
         self.assertEqual(screen.ctx.status, "cancelled")
-        self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
-        self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
+        count = len(self.events())
+        demo.shutdown(screen.ctx)
+        self.assertEqual(len(self.events()), count)
+        self.assertFalse(view.handles_back)
 
-    def test_activation_or_client_failure_still_cleans_up(self):
-        for failing in ("monairng", "monsniff"):
-            with self.subTest(failing=failing):
-                self.calls.clear()
+    def test_driver_that_preserves_interface_name(self):
+        self.state(same_name=True)
+        screen, view = self.start()
+        self.clients(screen, view)
+        self.assertEqual(screen.ctx.wifi_deauth_session.monitor, "wlan0")
+        self.close(screen)
+        self.assertIn("airmon-ng stop wlan0", self.events())
 
-                def fail(ctx, name, values, expected):
-                    if name == failing:
-                        self.calls.append((name, dict(values)))
-                        raise ValueError(f"{name} test failure")
-                    return self.helper(ctx, name, values, expected)
+    def test_original_down_state_is_preserved(self):
+        self.state(up=False)
+        screen, view = self.start()
+        self.clients(screen, view)
+        self.close(screen)
+        self.assertFalse(self.state()["up"])
+        self.assertNotIn("ip link set dev wlan0 up", self.events())
 
-                with patch.object(demo, "helper", side_effect=fail):
-                    screen, view = self.start()
-                    screen.action("a")
-                    screen._thread.join(3)
+    def test_cancel_before_activation_never_changes_mode(self):
+        screen, _ = self.start()
+        self.close(screen)
+        self.assertFalse(any("airmon-ng" in line for line in self.events()))
+
+    def test_partial_activation_failure_still_restores(self):
+        self.state(start_fail=True)
+        screen, view = self.start()
+        screen.action("a")
+        screen._thread.join(6)
+        self.assertFalse(screen.alive)
+        self.assertEqual(screen.ctx.status, "error")
+        self.assertIn("activation denied", screen.ctx.error)
+        self.assertFalse(self.state()["monitor"])
+        self.assertIn("airmon-ng stop wlan0mon", self.events())
+
+    def test_cancel_during_activation_still_restores(self):
+        self.state(start_sleep=True)
+        screen, view = self.start()
+        screen.action("a")
+        self.wait(lambda: self.state().get("monitor", False))
+        self.close(screen)
+        self.assertFalse(self.state()["monitor"])
+
+    def test_activation_timeout_still_restores(self):
+        self.state(start_sleep=True)
+        screen, view = self.start()
+        real_command = demo.command
+
+        def timed(ctx, argv):
+            timeout = 0.5 if argv[0] == self.commands["airmon-ng"] and argv[1] == "start" else 8
+            with patch.object(demo, "SCRIPT_TIMEOUT", timeout):
+                return real_command(ctx, argv)
+
+        with patch.object(demo, "command", side_effect=timed):
+            screen.action("a")
+            screen._thread.join(6)
+        self.assertFalse(screen.alive)
+        self.assertIn("timed out", screen.ctx.error)
+        self.assertIn("airmon-ng start wlan0 36", self.events())
+        self.assertFalse(self.state()["monitor"])
+
+    def test_capture_failure_restores_and_reports_error(self):
+        self.state(capture_bad=True)
+        screen, view = self.start()
+        screen.action("a")
+        screen._thread.join(6)
+        self.assertFalse(screen.alive)
+        self.assertEqual(screen.ctx.status, "error")
+        self.assertIn("Client scanner", screen.ctx.error)
+        self.assertFalse(self.state()["monitor"])
+        self.assertFalse((self.root / "capturing").exists())
+
+    def test_cleanup_failure_remains_visible_and_preserves_recovery_state(self):
+        self.state(stop_fail=True)
+        screen, view = self.start()
+        self.clients(screen, view)
+        with patch("sys.stderr", io.StringIO()):
+            self.close(screen)
+        self.assertEqual(screen.ctx.status, "error")
+        self.assertIn("restoration denied", screen.ctx.error)
+        self.assertTrue(screen.ctx.wifi_deauth_session.activation_attempted)
+        self.state(stop_fail=False)
+        # A shutdown context allows recovery even though the app was cancelled.
+        screen.ctx._shutting_down = True
+        try:
+            demo.shutdown(screen.ctx)
+        finally:
+            screen.ctx._shutting_down = False
+        self.assertFalse(self.state()["monitor"])
+
+    def test_successful_stop_without_managed_mode_is_not_accepted(self):
+        self.state(stop_noop=True)
+        screen, view = self.start()
+        self.clients(screen, view)
+        with patch("sys.stderr", io.StringIO()):
+            self.close(screen)
+        self.assertEqual(screen.ctx.status, "error")
+        self.assertIn("was not restored", screen.ctx.error)
+        self.assertTrue(screen.ctx.wifi_deauth_session.activation_attempted)
+
+    def test_shared_adapter_or_initial_monitor_mode_is_not_owned(self):
+        for values in ({"shared": True}, {"shared": False, "initial_mode": "monitor"}):
+            with self.subTest(values=values):
+                self.state(**values)
+                screen, view = self.start()
+                screen.action("a")
+                screen._thread.join(4)
                 self.assertFalse(screen.alive)
                 self.assertEqual(screen.ctx.status, "error")
-                self.assertIn(f"{failing} test failure", screen.ctx.error)
-                self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
+                self.assertFalse(screen.ctx.wifi_deauth_session.activation_attempted)
+                self.assertFalse(any("airmon-ng" in line for line in self.events()))
                 self.nav.pop()
 
-    def test_bad_kick_telemetry_stops_process_and_surfaces_error(self):
-        original = demo.helper_command
-
-        def commands(name, values, resolved):
-            if name == "kickerscript":
-                return [sys.executable, "-u", "-c",
-                        "import time; print('invalid telemetry', flush=True); time.sleep(30)"]
-            return original(name, values, resolved)
-
-        with patch.object(demo, "helper_command", side_effect=commands):
-            screen, view = self.start()
-            self.clients(screen, view)
-            screen.action("a")
-            screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertEqual(screen.ctx.status, "error")
-        self.assertIn("invalid demo JSON", screen.ctx.error)
-        self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
-        self.assertEqual([name for name, _ in self.calls].count("monairngreverse"), 1)
-
-    def test_cleanup_failure_is_visible(self):
+    def test_missing_tool_and_failed_ap_scan_are_visible(self):
+        self.commands.pop("airmon-ng")
         screen, view = self.start()
-        self.clients(screen, view)
-
-        def fail(ctx, name, values, expected):
-            if name == "monairngreverse":
-                raise ValueError("fake restoration failed")
-            return self.helper(ctx, name, values, expected)
-
-        with patch.object(demo, "helper", side_effect=fail), patch("sys.stderr"):
-            screen.close()
-            screen._thread.join(3)
-        self.assertFalse(screen.alive)
-        self.assertEqual(screen.ctx.status, "error")
-        self.assertIn("fake restoration failed", screen.ctx.error)
-
-    def test_failed_real_refresh_preserves_but_disables_stale_aps(self):
-        with patch.object(demo, "scan", side_effect=[(AP,), ValueError("scan denied")]), \
-                patch.object(demo.time, "monotonic", side_effect=lambda: time.perf_counter() * 1000):
+        screen._thread.join(3)
+        self.assertIn("Missing command: airmon-ng", screen.ctx.error)
+        self.assertEqual(self.events(), [])
+        self.nav.pop()
+        self.commands["airmon-ng"] = str(self.root / "airmon-ng")
+        with patch.object(demo, "scan", side_effect=ValueError("scan denied")):
             screen, view = self.start()
             screen._thread.join(3)
-        self.assertFalse(screen.alive)
         self.assertEqual(screen.ctx.status, "error")
-        self.assertEqual(view.networks.snapshot.networks, (AP,))
-        self.assertIn("STALE", view.networks.snapshot.message)
-        screen.action("a")
-        self.assertTrue(view.requests.empty())
+        self.assertIn("scan denied", screen.ctx.error)
 
 
 class ViewTests(unittest.TestCase):
@@ -401,7 +464,7 @@ class ViewTests(unittest.TestCase):
     def setUpClass(cls):
         pygame.font.init()
 
-    def test_tables_and_details_at_real_reduced_body_sizes(self):
+    def test_handheld_layouts_broadcast_scroll_and_mac_selection(self):
         from deckfw.statusbar import StatusBar
 
         for size in ((320, 240), (640, 480)):
@@ -417,47 +480,38 @@ class ViewTests(unittest.TestCase):
                                    app_rect.h - line_h - theme.pad * 2)
                 view = demo.DemoView()
                 view.interface = "wlan0"
-                points = tuple(replace(AP, bssid=f"02:00:00:00:00:{i:02X}") for i in range(20))
-                view.networks.snapshot = Snapshot(points, "20 real APs", interfaces=("wlan0",))
-                for _ in range(19):
-                    view.action("down")
-                view.draw(surface, body, theme)
-                self.assertEqual(view.networks.selected_bssid, points[-1].bssid)
-                self.assertGreater(view.networks._top, 0)
-                view.action("a")
-                self.assertEqual(view.requests.get_nowait()[2], points[-1])
-
-                clients = tuple(replace(CLIENT, mac=f"02:DE:AD:00:00:{i:02X}") for i in range(20))
+                clients = (demo.BROADCAST, *[
+                    replace(CLIENT, mac=f"12:DE:AD:00:00:{i:02X}", power_dbm=None)
+                    for i in range(20)])
                 view.transition("clients", ap=AP, clients=clients)
-                for _ in range(19):
-                    view.action("down")
                 with patch.object(theme, "render", wraps=theme.render) as render:
                     view.draw(surface, body, theme)
                 texts = [call.args[1] for call in render.call_args_list]
-                self.assertTrue(any(text.startswith("Invented clients") for text in texts))
-                self.assertIn(clients[-1].mac, texts)
+                self.assertTrue(any("Broadcast" in text for text in texts))
+                self.assertTrue(any("Observed" in text for text in texts))
+                for _ in range(20):
+                    view.action("down")
                 view.action("right")
-                self.assertEqual(view.horizontal, min(80, view.max_horizontal))
                 view.draw(surface, body, theme)
+                self.assertEqual(view.horizontal, min(80, view.max_horizontal))
                 view.action("a")
                 self.assertEqual(view.requests.get_nowait()[2], clients[-1])
                 view.state = replace(view.state, clients=tuple(reversed(clients)))
                 view.action("a")
                 self.assertEqual(view.requests.get_nowait()[2], clients[-1])
-                view.transition("kick", ap=replace(AP, ssid="Long SSID " * 20), client=CLIENT)
-                for _ in range(100):
-                    view.action("down")
-                with patch.object(theme, "render", wraps=theme.render) as render:
-                    view.draw(surface, body, theme)
-                if size[0] == 320:
-                    self.assertGreater(view.top, 0)
-                texts = [call.args[1] for call in render.call_args_list]
-                self.assertIn("No real device is disconnected.", texts)
+                for client in (CLIENT, demo.BROADCAST):
+                    view.transition("kick", ap=replace(AP, ssid="Long SSID " * 20), client=client)
+                    for _ in range(100):
+                        view.action("down")
+                    with patch.object(theme, "render", wraps=theme.render) as render:
+                        view.draw(surface, body, theme)
+                    texts = [call.args[1] for call in render.call_args_list]
+                    self.assertIn("No real device is disconnected.", texts)
                 view.action("b")
-                view.transition("clients", ap=AP)
+                view.transition("clients", ap=AP, clients=(demo.BROADCAST,))
                 self.assertEqual(demo.request(view), (None, None))
-                view.draw(surface, body, theme)
-                self.assertFalse(view.action("a"))
+                view.action("a")
+                self.assertEqual(view.requests.get_nowait()[2], demo.BROADCAST)
 
 
 if __name__ == "__main__":

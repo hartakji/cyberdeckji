@@ -1,4 +1,4 @@
-"""Real AP discovery followed by strictly simulated Wi-Fi demo activity."""
+"""Real AP/client discovery followed by strictly simulated deauthentication."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 import queue
 import re
 import shutil
+import sys
 import threading
 import time
 
@@ -17,9 +18,10 @@ from deckfw import app, Cancelled, Choice, Context, Form, Number, Widget
 from apps._wifi_scan import AccessPoint, NetworkList, Snapshot, scan, wireless_interfaces, wrapped
 
 
-COMMANDS = ("monairng", "monsniff", "kickerscript", "monairngreverse")
-SCRIPT_TIMEOUT = 5
+SCRIPT_TIMEOUT = 8
 MAC = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+INTERFACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}")
+SCANNER = Path(__file__).resolve().parents[1] / "tools" / "airodump_clients.py"
 
 
 def setup():
@@ -30,15 +32,18 @@ def setup():
             ("2.4 + 5 GHz", "both"), ("2.4 GHz", "2.4"), ("5 GHz", "5"),
         ], "both"),
         Number("interval", "Refresh (s)", default=15, minimum=5, maximum=120,
-               help="Real AP scans; all clients and subsequent activity are fake."),
-    ], submit_label="Start demo")
+               help="AP refresh only. Client capture is live; deauth is simulated."),
+    ], submit_label="Start")
 
 
 @dataclass(frozen=True)
 class Client:
     mac: str
-    name: str
-    signal: int
+    power_dbm: int | None
+    packets: int
+
+
+BROADCAST = Client("FF:FF:FF:FF:FF:FF", None, 0)
 
 
 @dataclass(frozen=True)
@@ -53,63 +58,169 @@ class View:
     ticks: int = 0
 
 
-@dataclass
-class Session:
-    interface: str
-    commands: dict
-    monitor_ap: AccessPoint | None = None
-
-
-def parameters(interface, ap, client=None):
-    values = {"interface": interface, "band": ap.band, "channel": ap.channel,
-              "bssid": ap.bssid, "essid": ap.ssid}
-    if client is not None:
-        values["client"] = client.mac
-    return values
-
-
 def resolve_commands():
     commands = {}
-    for name in COMMANDS:
+    for name in ("nmcli", "airmon-ng", "airodump-ng", "iw", "ip"):
         path = shutil.which(name)
         if not path:
-            raise ValueError(f"Missing system demo command: {name}. Install it on PATH.")
+            raise ValueError(f"Missing command: {name}. Install it on PATH.")
         commands[name] = str(Path(path).absolute())
     return commands
 
 
-def helper_command(name, values, commands):
-    if name not in COMMANDS:
-        raise ValueError("Unknown demo helper")
-    return [commands[name], *[f"--{key}={value}" for key, value in values.items()]]
+@dataclass(frozen=True)
+class Interface:
+    name: str
+    phy: int
+    index: int
+    mode: str
+    address: str
 
 
-def event(line, expected, values):
+def interfaces_from(lines):
+    devices, current, phy = [], None, None
+    for line in [*lines, "phy#end"]:
+        text = line.strip()
+        if text.startswith(("phy#", "Interface ")):
+            if current is not None:
+                try:
+                    device = Interface(current["name"], current["phy"],
+                                       int(current["ifindex"]), current["type"], current["addr"])
+                except (KeyError, ValueError) as exc:
+                    raise ValueError("Incomplete iw interface information") from exc
+                if (not INTERFACE.fullmatch(device.name) or not MAC.fullmatch(device.address)
+                        or device.index <= 0):
+                    raise ValueError("Invalid iw interface information")
+                devices.append(device)
+                current = None
+            if text.startswith("phy#"):
+                if text == "phy#end":
+                    break
+                try:
+                    phy = int(text[4:])
+                except ValueError as exc:
+                    raise ValueError("Invalid iw physical adapter") from exc
+            else:
+                if phy is None:
+                    raise ValueError("iw interface has no physical adapter")
+                current = {"name": text[10:], "phy": phy}
+        elif current is not None:
+            key, _, value = text.partition(" ")
+            if key in ("ifindex", "type", "addr"):
+                current[key] = value.strip()
+    if len({device.name for device in devices}) != len(devices):
+        raise ValueError("Duplicate iw interface")
+    return devices
+
+
+@dataclass
+class Session:
+    interface: str
+    commands: dict
+    original: Interface | None = None
+    monitor: str = ""
+    monitor_device: Interface | None = None
+    original_up: bool | None = None
+    activation_attempted: bool = False
+    capture_task: ScriptTask | None = None
+
+    def devices(self, ctx):
+        return interfaces_from(command(ctx, [self.commands["iw"], "dev"]).lines)
+
+    def link_up(self, ctx):
+        result = command(ctx, [self.commands["ip"], "-j", "link", "show",
+                               "dev", self.interface])
+        try:
+            links = json.loads("\n".join(result.lines))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid ip link information") from exc
+        if (not isinstance(links, list) or len(links) != 1
+                or not isinstance(links[0], dict) or links[0].get("ifname") != self.interface
+                or not isinstance(links[0].get("flags"), list)
+                or not all(isinstance(flag, str) for flag in links[0]["flags"])):
+            raise ValueError("Incomplete ip link information")
+        return "UP" in links[0]["flags"]
+
+    def activate(self, ctx, channel):
+        devices = self.devices(ctx)
+        original = next((device for device in devices if device.name == self.interface), None)
+        if original is None or original.mode != "managed":
+            raise ValueError("Selected interface must exist in managed mode.")
+        if len([device for device in devices if device.phy == original.phy]) != 1:
+            raise ValueError("Selected adapter has shared interfaces; refusing ambiguous ownership.")
+        self.original = original
+        self.original_up = self.link_up(ctx)
+        self.activation_attempted = True
+        command(ctx, [self.commands["airmon-ng"], "start", self.interface, str(channel)])
+        devices = [device for device in self.devices(ctx) if device.phy == original.phy]
+        monitors = [device for device in devices if device.mode == "monitor"]
+        if (len(monitors) != 1 or any(device.mode not in ("managed", "monitor")
+                                     for device in devices)):
+            raise ValueError("Cannot identify the activated monitor interface; cleanup required.")
+        self.monitor = monitors[0].name
+        self.monitor_device = monitors[0]
+
+    def restore(self, ctx):
+        if self.capture_task is not None:
+            self.capture_task.stop()
+            self.capture_task = None
+        if not self.activation_attempted:
+            return
+        original = self.original
+        devices = [device for device in self.devices(ctx) if device.phy == original.phy]
+        monitors = [device for device in devices if device.mode == "monitor"]
+        if len(monitors) > 1:
+            raise ValueError("Ambiguous monitor interfaces; restore the selected adapter manually.")
+        if monitors:
+            monitor = monitors[0]
+            if ((self.monitor_device is not None and monitor != self.monitor_device)
+                    or (self.monitor_device is None
+                        and monitor.address.lower() != original.address.lower())):
+                raise ValueError("Monitor interface changed externally; manual restoration required.")
+            command(ctx, [self.commands["airmon-ng"], "stop", monitor.name])
+            devices = [device for device in self.devices(ctx) if device.phy == original.phy]
+        if (len(devices) != 1 or devices[0].name != original.name
+                or devices[0].mode != "managed"
+                or devices[0].address.lower() != original.address.lower()):
+            raise ValueError(
+                f"Managed interface {original.name} was not restored. "
+                "Check iw dev and restore this adapter manually.")
+        if self.link_up(ctx) != self.original_up:
+            command(ctx, [self.commands["ip"], "link", "set", "dev", self.interface,
+                          "up" if self.original_up else "down"])
+            if self.link_up(ctx) != self.original_up:
+                raise ValueError("Original interface link state was not restored.")
+        self.monitor = ""
+        self.monitor_device = None
+        self.activation_attempted = False
+
+
+def clients_from(line, target):
     try:
         data = json.loads(line)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"{expected}: invalid demo JSON") from exc
-    if (not isinstance(data, dict) or data.get("demo") is not True
-            or data.get("event") != expected or data.get("target") != values):
-        raise ValueError(f"{expected}: invalid demo event or target")
-    return data
-
-
-def clients_from(data):
+        raise ValueError("Client scanner: invalid JSON: " + line[-1000:]) from exc
+    if (not isinstance(data, dict) or data.get("source") != "airodump-ng"
+            or data.get("event") != "clients" or data.get("target") != target
+            or type(data.get("target", {}).get("channel")) is not int):
+        raise ValueError("Client scanner: invalid event source or target")
     records = data.get("clients")
-    if not isinstance(records, list) or len(records) > 100:
-        raise ValueError("Invalid synthetic client list")
+    if not isinstance(records, list):
+        raise ValueError("Invalid observed client list")
     clients, seen = [], set()
     for record in records:
         if not isinstance(record, dict):
-            raise ValueError("Invalid synthetic client record")
-        mac, name, signal = (record.get(key) for key in ("mac", "name", "signal"))
+            raise ValueError("Invalid observed client record")
+        mac, power, packets = (record.get(key) for key in ("mac", "power_dbm", "packets"))
         if (not isinstance(mac, str) or not MAC.fullmatch(mac)
-                or mac.upper() in seen or not isinstance(name, str) or not name
-                or len(name) > 80 or type(signal) is not int or not 0 <= signal <= 100):
-            raise ValueError("Invalid synthetic client fields")
+                or mac.upper() in seen or mac == "00:00:00:00:00:00"
+                or int(mac[:2], 16) & 1 or mac.upper() == target["bssid"].upper()
+                or "power_dbm" not in record
+                or (power is not None and (type(power) is not int or not -127 <= power <= 0))
+                or type(packets) is not int or packets < 0):
+            raise ValueError("Invalid observed client fields")
         seen.add(mac.upper())
-        clients.append(Client(mac.upper(), name, signal))
+        clients.append(Client(mac.upper(), power, packets))
     return tuple(clients)
 
 
@@ -120,14 +231,15 @@ class ScriptTask:
         self.ctx = Context(spec)
         self.messages = queue.Queue()
         self.command, self.stream = command, stream
-        self.worker = threading.Thread(target=self.work, daemon=True, name="wifi-demo-script")
+        self.worker = threading.Thread(target=self.work, daemon=True, name="wifi-script")
         self.worker.start()
 
     def work(self):
         try:
             result = self.ctx.run(
                 self.command, log=False,
-                on_line=(lambda line: self.messages.put(("line", line))) if self.stream else None)
+                on_line=(lambda line: self.messages.put(("line", line))) if self.stream else None,
+                env={"LC_ALL": "C"})
             self.messages.put(("result", result))
         except Exception as exc:
             self.messages.put(("error", exc))
@@ -143,16 +255,16 @@ class ScriptTask:
         self.ctx.cancel()
         self.worker.join(timeout=12)
         if self.worker.is_alive():
-            raise RuntimeError("Demo script did not stop; cleanup is incomplete")
+            raise RuntimeError("Wi-Fi process did not stop; cleanup is incomplete")
 
 
-def helper(ctx, name, values, expected):
-    task = ScriptTask(ctx.spec, helper_command(name, values, ctx.wifi_deauth_session.commands))
+def command(ctx, argv):
+    task = ScriptTask(ctx.spec, argv)
     deadline = time.monotonic() + SCRIPT_TIMEOUT
     try:
         while True:
             if time.monotonic() >= deadline:
-                raise ValueError(f"{name} timed out after {SCRIPT_TIMEOUT}s")
+                raise ValueError(f"{Path(argv[0]).name} timed out after {SCRIPT_TIMEOUT}s")
             kind, result = task.message(ctx)
             if kind == "error":
                 raise result
@@ -161,11 +273,9 @@ def helper(ctx, name, values, expected):
     finally:
         task.stop()
     if result.returncode != 0:
-        raise ValueError(f"{name} failed ({result.returncode}): "
+        raise ValueError(f"{Path(argv[0]).name} failed ({result.returncode}): "
                          + (" ".join(result.lines[-4:]) or "no diagnostic output"))
-    if len(result.lines) != 1:
-        raise ValueError(f"{name}: expected one demo event")
-    return event(result.lines[0], expected, values)
+    return result
 
 
 class DemoView(Widget):
@@ -240,19 +350,20 @@ class DemoView(Widget):
         def text(value, y, color=theme.text):
             surf.blit(theme.render(font, theme.fit(font, value, rect.w), color), (rect.x, y))
 
-        text("DEMO - real AP scan / fake activity", rect.y, theme.warn)
+        text("Real discovery / SIMULATED deauth", rect.y, theme.warn)
         body = pygame.Rect(rect.x, rect.y + line_h, rect.w, max(0, rect.h - line_h))
         if state.phase == "networks":
             self.networks.draw(surf, body, theme)
             return
         if state.phase == "clients":
-            text("Invented clients - not observed devices", body.y, theme.warn)
+            text("Observed clients - not a connection list", body.y, theme.warn)
             ap = state.ap
             text(f"{ap.bssid} | Ch {ap.channel} / {ap.band}G", body.y + line_h, theme.accent)
             row_h = line_h + pad
             table = pygame.Rect(body.x, body.y + 2 * line_h, body.w,
                                 max(0, body.h - 3 * line_h))
-            widths = [font.size("AA:BB:CC:DD:EE:FF")[0] + pad * 2, 150, 70]
+            widths = [max(font.size(value)[0] for value in
+                          ("AA:BB:CC:DD:EE:FF", "Broadcast (all clients)")) + pad * 2, 110, 90]
             self.max_horizontal = max(0, sum(widths) - table.w)
             self.horizontal = min(self.horizontal, self.max_horizontal)
             selected = self.selection(state.clients)
@@ -260,9 +371,12 @@ class DemoView(Widget):
             top = max(0, selected - visible + 1)
             clip = surf.get_clip()
             surf.set_clip(table.clip(clip))
-            rows = [("Client MAC", "Demo name", "Signal")]
-            rows.extend((client.mac, client.name, f"{client.signal}%")
-                        for client in state.clients[top:top + visible])
+            rows = [("Client MAC / target", "Power", "Packets")]
+            rows.extend(
+                ("Broadcast (all clients)", "-", "-") if client == BROADCAST else
+                (client.mac, "unavailable" if client.power_dbm is None
+                 else f"{client.power_dbm} dBm", str(client.packets))
+                for client in state.clients[top:top + visible])
             for index, values in enumerate(rows):
                 y, x = table.y + index * row_h, table.x - self.horizontal
                 pygame.draw.rect(surf, theme.track if index == 0 else theme.panel,
@@ -277,7 +391,7 @@ class DemoView(Widget):
                     pygame.draw.rect(surf, theme.accent, (table.x, y, 3, row_h))
             surf.set_clip(clip)
             footer = (f"{selected + 1}/{len(state.clients)}" if state.clients
-                      else "No demo clients")
+                      else "Waiting for capture")
             text(footer + " | A select | B networks", rect.bottom - line_h, theme.dim)
             return
         if state.phase == "kick":
@@ -288,7 +402,8 @@ class DemoView(Widget):
                 f"ESSID: {ap.ssid or '<hidden SSID>'}",
                 f"BSSID: {ap.bssid}",
                 f"Channel: {ap.channel} | Band: {ap.band} GHz",
-                f"Client: {client.mac} ({client.name})",
+                ("Target: Broadcast (all clients)" if client == BROADCAST
+                 else f"Client: {client.mac}"),
                 f"Elapsed: {state.elapsed}s | Fake cycles: {state.ticks}",
                 "No real device is disconnected.",
             ]
@@ -316,39 +431,61 @@ def request(view):
             return action, target
 
 
-def kick(ctx, view, values):
-    task = ScriptTask(ctx.spec, helper_command(
-        "kickerscript", values, ctx.wifi_deauth_session.commands), stream=True)
+def capture_clients(ctx, view, session):
+    ap = view.state.ap
+    target = {"interface": session.monitor, "bssid": ap.bssid.upper(), "channel": ap.channel}
+    task = ScriptTask(ctx.spec, [
+        sys.executable, "-u", str(SCANNER), "--interface", session.monitor,
+        "--bssid", target["bssid"], "--channel", str(ap.channel)], stream=True)
+    session.capture_task = task
+    observed = {client.mac: client for client in view.state.clients if client != BROADCAST}
+    deadline = time.monotonic() + 20
     try:
         while True:
-            action, _ = request(view)
+            action, selected = request(view)
             if action == "back":
-                return
+                return action, None
+            if action == "client":
+                current = next((client for client in view.state.clients
+                                if client.mac == selected.mac), None)
+                if current is not None:
+                    return action, current
+            if time.monotonic() >= deadline:
+                raise ValueError("Client scanner stopped producing valid snapshots.")
             kind, value = task.message(ctx)
             if kind is None:
                 continue
             if kind == "error":
                 raise value
             if kind != "line":
-                raise ValueError(f"kickerscript ended unexpectedly ({value.returncode}): "
+                raise ValueError(f"Client scanner ended unexpectedly ({value.returncode}): "
                                  + (" ".join(value.lines[-4:]) or "no diagnostic output"))
-            data = event(value, "kick", values)
-            if any(type(data.get(key)) is not int or data[key] < 0
-                   for key in ("elapsed", "ticks")):
-                raise ValueError("Invalid fake kick counters")
-            view.state = replace(view.state, elapsed=data["elapsed"], ticks=data["ticks"])
+            for client in clients_from(value, target):
+                observed[client.mac] = client
+            view.state = replace(view.state, clients=(
+                BROADCAST, *[observed[mac] for mac in sorted(observed)]))
+            deadline = time.monotonic() + 20
     finally:
         task.stop()
+        session.capture_task = None
+
+
+def kick(ctx, view):
+    started = time.monotonic()
+    while True:
+        ctx.check()
+        action, _ = request(view)
+        if action == "back":
+            return
+        elapsed = int(time.monotonic() - started)
+        view.state = replace(view.state, elapsed=elapsed, ticks=elapsed)
+        ctx.sleep(0.03)
 
 
 def shutdown(ctx):
     session = getattr(ctx, "wifi_deauth_session", None)
-    if session is None or session.monitor_ap is None:
-        return
-    helper(ctx, "monairngreverse", parameters(session.interface, session.monitor_ap),
-           "monitor_stopped")
-    session.monitor_ap = None
-    ctx.log("DEMO: monairngreverse completed.", color="ok")
+    if session is not None:
+        session.restore(ctx)
 
 
 @app(name="Wifi Deauth", group="Network", icon="icons/network.png",
@@ -360,10 +497,8 @@ def wifi_deauth(ctx):
         view.interface = interface
         if interface not in wireless_interfaces():
             raise ValueError("Selected adapter disappeared; reopen setup.")
-        nmcli = shutil.which("nmcli")
-        if not nmcli:
-            raise ValueError("Install NetworkManager (nmcli) and start its service.")
         session = ctx.wifi_deauth_session = Session(interface, resolve_commands())
+        nmcli = session.commands["nmcli"]
         due = 0
         while True:
             ctx.check()
@@ -372,10 +507,9 @@ def wifi_deauth(ctx):
             if state.phase == "networks":
                 if action == "network" and any(ap.bssid == target.bssid
                                                for ap in view.networks.snapshot.networks):
-                    view.transition("busy", title="DEMO: monairng - simulated monitor activation")
-                    session.monitor_ap = target
-                    helper(ctx, "monairng", parameters(interface, target), "monitor_started")
-                    view.transition("clients", ap=target)
+                    view.transition("busy", title="Enabling monitor mode; Wi-Fi may disconnect...")
+                    session.activate(ctx, target.channel)
+                    view.transition("clients", ap=target, clients=(BROADCAST,))
                     due = 0
                     continue
                 if time.monotonic() >= due:
@@ -395,23 +529,26 @@ def wifi_deauth(ctx):
                         updated=time.strftime("%H:%M:%S"), interfaces=(interface,))
                     due = time.monotonic() + interval
             elif state.phase == "clients":
+                # capture_clients owns navigation while its streaming process is active.
+                if action is not None:
+                    view.requests.put((state.generation, action, target))
+                action, target = capture_clients(ctx, view, session)
                 if action == "back":
+                    view.transition("busy", title="Restoring managed Wi-Fi mode...")
+                    session.restore(ctx)
                     view.transition("networks")
                     due = 0
                     continue
-                if action == "client" and target in state.clients:
+                if action == "client" and target in view.state.clients:
+                    clients = view.state.clients
                     view.transition("kick", ap=state.ap, client=target)
-                    kick(ctx, view, parameters(interface, state.ap, target))
-                    view.transition("clients", ap=state.ap, clients=state.clients)
+                    kick(ctx, view)
+                    view.transition("clients", ap=state.ap, clients=clients)
                     due = 0
                     continue
-                if time.monotonic() >= due:
-                    data = helper(ctx, "monsniff", parameters(interface, state.ap), "clients")
-                    view.state = replace(state, clients=clients_from(data))
-                    due = time.monotonic() + interval
             ctx.sleep(0.03)
     except Cancelled:
-        view.transition("stopped", title="DEMO stopped")
+        view.transition("stopped", title="Stopped; restoring adapter")
         raise
     except ValueError as exc:
         view.transition("error", title=str(exc))
