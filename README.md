@@ -455,56 +455,44 @@ An error stops refresh and shows its diagnostic; previous results are explicitly
 marked **STALE**. Press B to return to setup and run again. On a non-Linux
 desktop the entry is visible but explains that Linux is required.
 
-## Wifi Deauth: real client discovery, simulated deauth (Linux)
+## Wifi Deauth: client discovery and simulated deauth (Linux)
 
 Open **Apps > Network > Wifi Deauth**. Choose one detected adapter, a 2.4/5 GHz
 band filter and a refresh interval (5..120 seconds, default 15). The first table
-uses the Wi-Fi scanner's **real NetworkManager AP discovery**. Scans may send
-discovery probes; this step is not an offline simulation. Up/Down highlights an
-AP, Left/Right scrolls columns, and **A** retains its ESSID, BSSID, channel and
-actual band.
+uses the Wi-Fi scanner's **NetworkManager AP discovery**. Scans may send
+discovery probes. Up/Down highlights an AP, Left/Right scrolls columns, and
+**A** retains its ESSID, BSSID, channel and actual band.
 
-Use only on networks and devices you own or are explicitly authorized to test.
 After AP selection the app stops NetworkManager discovery and uses
-**the same adapter** for real monitor-mode capture. This can disconnect its
-current Wi-Fi connection. `airmon-ng start` enables monitor mode on the chosen
-channel; `iw dev` identifies the actual monitor interface, including drivers
-that rename it. The selected adapter must initially have one managed interface;
-pre-existing monitor/shared-interface configurations are rejected rather than
-claimed or altered.
+**the same adapter** for monitor-mode capture. This can disconnect its current
+Wi-Fi connection. `airmon-ng start` enables monitor mode on the chosen channel;
+`iw dev` identifies the actual monitor interface, including drivers that rename
+it. The selected adapter must initially have one managed interface;
+pre-existing monitor/shared-interface configurations are rejected.
 
-The app runs `tools/airodump_clients.py` and consumes the JSON Lines contract
-above. The live table shows real observed MACs, dBm/unavailable power and packet
-counts, plus a permanently selectable **Broadcast (all clients)** row, even
-when no stations have appeared. The refresh setting controls AP discovery only;
-client snapshots arrive continuously, approximately every two seconds.
-MAC-based selection survives refreshes. Observations are not an authoritative
-list of currently connected devices, and previously seen clients remain listed.
-No CSV or other capture files are created.
+The app runs `tools/airodump_clients.py` for observed client snapshots. The live
+table shows observed MACs, power and packet counts, plus a permanently
+selectable **Broadcast (all clients)** row, even when no stations have appeared.
+Observations are not an authoritative list of currently connected devices, and
+previously seen clients remain listed. No CSV or capture files are created.
 
-**A** on a client or Broadcast first stops/reaps capture, then starts
-**strictly simulated deauth**: only local elapsed-time/fake-cycle counters run.
-There is no injection or disconnect command, and no external `kickerscript`.
-**B** stops the simulation and resumes passive capture on the selected AP,
-retaining its observations (packet counts reflect the latest capture run).
-**B** from clients stops capture, restores managed mode and the original
-administrative up/down state, then returns to AP discovery. From APs, B exits
-the app. Launcher shutdown, cancellation and errors also run restoration after
-active capture has stopped; no activation attempt means no mode cleanup.
+On **A** for a client or Broadcast, the app stops capture and runs the installed
+`kickerscript --simulate` command. The app keeps the chosen target in its UI;
+the command receives no target arguments. Its output is shown on the kick screen.
+**B** stops and reaps the simulation, then resumes capture. This mode is a
+simulation: it does not send deauthentication frames or disconnect clients.
 
 Dependencies are **NetworkManager/nmcli**, **aircrack-ng** (`airmon-ng` and
 `airodump-ng`), **iw**, and **iproute2** (`ip`), plus monitor-capable hardware.
+The `kickerscript` command must be on `PATH` and support the `--simulate` mode.
 Mode changes generally require root privileges; arrange appropriate execution
 permissions with your administrator. The app never invokes sudo, runs
-`airmon-ng check kill`, or stops NetworkManager/other services. Interference from
-another service, missing permissions or adapter removal is an explicit error.
-One-shot control commands have an eight-second timeout. Cleanup verifies
-managed mode/interface identity and restores its administrative link state;
-it does not recreate a saved Wi-Fi connection or restart network services.
-
-The old `monairng`, `monsniff`, `kickerscript` and `monairngreverse` demo helpers
-are no longer used or required. Real observations never masquerade as
-`demo: true` synthetic events.
+`airmon-ng check kill`, invokes `aireplay-ng`, or stops NetworkManager/other
+services. Missing commands, permissions issues and adapter removal are explicit
+errors. One-shot control commands have an eight-second timeout. Cleanup
+verifies managed mode/interface identity and restores its administrative link
+state; it does not recreate a saved Wi-Fi connection or restart network
+services.
 
 Restoration is idempotent, but not guaranteed after SIGKILL, power loss, driver
 failure or external interface changes. Cleanup failures stay visible rather

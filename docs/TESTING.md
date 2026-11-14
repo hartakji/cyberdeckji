@@ -55,7 +55,7 @@ executable examples whose behavior needs checking.
 | `tests/test_parameter_examples.py` | Real demo/ping/shell sample contracts without actual network traffic |
 | `tests/test_wifi_scanner.py` | Escaped nmcli output, band filtering, setup/command errors, stale snapshots, scrolling and subprocess cancellation without real wireless scans |
 | `tests/test_airodump_clients.py` | File-free PTY capture, fragmented terminal redraws, station filtering/retention, JSON output, display limits, errors and bounded signal cleanup using synthetic displays/executables |
-| `tests/test_wifi_deauth.py` | Real scanner-to-app JSON integration with stub radios, same-adapter monitor lifecycle/renaming, Broadcast/client selection, internal simulation, cancellation/restoration ordering, errors and handheld layouts |
+| `tests/test_wifi_deauth.py` | Real scanner-to-app JSON integration with stub radios, same-adapter monitor lifecycle/renaming, Broadcast/client selection, streamed ping output, cancellation/restoration ordering, errors and handheld layouts |
 | `tests/test_quickshare.py` | Owner/form selection, NetworkManager commands, interface claims, nftables guard, route conflicts, restoration/failure/cancellation and small-screen dashboard without real network changes |
 | `tests/test_quickshare_http.py` | Loopback HTTP streaming, uploads/downloads, filename collisions, origin/framing checks, symlink/path boundaries, disk reserve, interrupted transfers and privilege-drop ordering |
 | `tests/test_port_scanner.py` | Local interface choices, ARP/XML parsing, TCP ranges, selectable tables, result/back navigation, errors and stub process cancellation/temporary XML cleanup |
@@ -121,25 +121,27 @@ PYTHONDONTWRITEBYTECODE=1 \
 ```
 
 Automated tests mock AP discovery and use only temporary `airmon-ng`, `iw`,
-`ip` and `airodump-ng` executables. They exercise the real scanner with a
-pseudo-terminal and JSON stream without scanning the host network, changing
-real interfaces or sending disconnect packets. They do not prove actual
-Linux driver/radio behavior.
+`ip`, `airodump-ng` and `ping` executables. The ping stub supplies streamed
+output without contacting Google; the app does not invoke a deauthentication
+tool. Scanner tests use a pseudo-terminal and JSON stream without scanning the
+host network, changing real interfaces or sending disconnect packets. They do
+not prove actual Linux driver/radio behavior.
 
 On an explicitly authorized Linux test network, with the README prerequisites,
 confirm AP selection stops discovery and enables monitor mode on that same
 adapter. Check renamed and unchanged monitor interface names where hardware
 allows. Confirm known clients appear as observed MAC/dBm/packet rows with no
 capture files, not invented names or claims of current connectivity.
-Broadcast must be selectable with zero clients. Selecting either target must
-stop capture before showing local fake counters; no external kick/injection
-tool should execute. B resumes capture and retains observations; B from
-clients restores managed mode and original link up/down state before AP scans
-resume. Check app/launcher exit, activation failure/cancellation, capture error,
-adapter removal and visible cleanup failures, plus 320x240/640x480 layouts.
-Never use an actual deauthentication command to smoke-test this flow. The
-standalone scanner still requires an existing monitor interface and must not
-change its mode. Forced termination cannot guarantee automatic recovery.
+Broadcast must be selectable with zero clients. Selecting either target stops
+capture and displays streamed `ping google.com` output; the ping process is
+reaped on B and capture resumes while retaining observations. B from clients restores
+managed mode and original link up/down
+state before AP scans resume. Check app/launcher exit, activation
+failure/cancellation, capture error, adapter removal and visible
+cleanup failures, plus 320x240/640x480 layouts. Never use an actual
+deauthentication command to smoke-test this flow. The standalone scanner still
+requires an existing monitor interface and must not change its mode. Forced
+termination cannot guarantee automatic recovery.
 
 ### QuickShare deployment smoke check
 

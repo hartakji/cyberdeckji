@@ -55,7 +55,7 @@ def system_stubs(directory):
         "\x1b[0K\n"
         f" {AP.bssid}  {CLIENT.mac}   -45    6e- 1     0       10        \x1b[0K\n"
         "\x1b[0J")
-    for name in ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip"):
+    for name in ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip", "ping"):
         script = root / name
         script.write_text(
             f"#!{sys.executable}\n"
@@ -109,13 +109,21 @@ def system_stubs(directory):
             "    finally:\n"
             "        if marker.exists(): marker.unlink()\n"
             "        log('capture_stopped')\n"
+            "elif name == 'ping':\n"
+            "    if state.get('ping_fail'):\n"
+            "        print('mock ping failed', flush=True); sys.exit(7)\n"
+            "    for sequence in range(1, 21):\n"
+            "        print(f'64 bytes from google.com: icmp_seq={sequence}', flush=True)\n"
+            "        time.sleep(0.03)\n"
+            "    while True: time.sleep(0.1)\n"
         )
         script.chmod(0o700)
     wrapper = root / "scanner.py"
     wrapper.write_text(
         "import runpy, sys\nsys.platform = 'linux'\n"
         f"runpy.run_path({str(demo.SCANNER)!r}, run_name='__main__')\n")
-    return {name: str(root / name) for name in ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip")}
+    return {name: str(root / name) for name in
+            ("nmcli", "airmon-ng", "iw", "airodump-ng", "ip", "ping")}
 
 
 class ContractTests(unittest.TestCase):
@@ -128,9 +136,15 @@ class ContractTests(unittest.TestCase):
                 form.validate({**form.defaults(), key: value})
         with patch.object(demo.shutil, "which", side_effect=lambda name: "/stub/" + name):
             self.assertEqual(set(demo.resolve_commands()),
-                             {"nmcli", "airmon-ng", "iw", "airodump-ng", "ip"})
+                             {"nmcli", "airmon-ng", "iw", "airodump-ng", "ip",
+                              "ping"})
         with patch.object(demo.shutil, "which", return_value=None):
             with self.assertRaisesRegex(ValueError, "Missing command"):
+                demo.resolve_commands()
+        with patch.object(demo.shutil, "which",
+                          side_effect=lambda name: None if name == "ping"
+                          else "/stub/" + name):
+            with self.assertRaisesRegex(ValueError, "Missing command: ping"):
                 demo.resolve_commands()
 
     def test_scanner_output_round_trips_into_app(self):
@@ -249,6 +263,10 @@ class LifecycleTests(unittest.TestCase):
         path = self.root / "events"
         return path.read_text().splitlines() if path.exists() else []
 
+    def ping_runner(self):
+        return next(runner for runner in self.runners
+                    if Path(runner.cmd[0]).name == "ping")
+
     def wait(self, predicate, message="App did not become ready"):
         deadline = time.monotonic() + 6
         while not predicate():
@@ -277,7 +295,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(screen.alive)
         self.assertTrue(all(runner._proc.poll() is not None for runner in self.runners))
 
-    def test_same_adapter_capture_selection_simulation_resume_and_restoration(self):
+    def test_same_adapter_capture_selection_ping_output_scroll_and_restoration(self):
         screen, view = self.start()
         self.clients(screen, view)
         self.assertEqual(screen.ctx.wifi_deauth_session.monitor, "wlan0mon")
@@ -288,13 +306,18 @@ class LifecycleTests(unittest.TestCase):
         self.wait(lambda: view.state.phase == "kick")
         self.assertEqual(view.state.client, CLIENT)
         self.assertFalse((self.root / "capturing").exists())
-        self.assertEqual(self.events()[-1], "capture_stopped")
-        runner_count = len(self.runners)
-        time.sleep(0.1)
-        self.assertEqual(len(self.runners), runner_count)
+        self.wait(lambda: "ping google.com" in self.events())
+        self.wait(lambda: len(view.state.output) >= 12)
+        self.assertIn("64 bytes from google.com: icmp_seq=1", view.state.output)
+        events = self.events()
+        self.assertLess(events.index("capture_stopped"), events.index("ping google.com"))
+        self.assertFalse(any("aireplay-ng" in line for line in events))
         self.assertEqual(demo.scan.call_count, 1)
         screen.action("b")
         self.wait(lambda: view.state.phase == "clients" and (self.root / "capturing").exists())
+        ping = self.ping_runner()
+        self.assertTrue(ping.stopped)
+        self.assertIsNotNone(ping._proc.poll())
         screen.action("b")
         self.wait(lambda: view.state.phase == "networks")
         self.assertFalse(self.state()["monitor"])
@@ -308,7 +331,8 @@ class LifecycleTests(unittest.TestCase):
         screen._thread.join(4)
         self.assertFalse(screen.alive)
         self.assertEqual(self.events().count("airmon-ng stop wlan0mon"), 1)
-        self.assertFalse(any("kick" in str(runner.cmd) for runner in self.runners))
+        self.assertTrue(all(Path(runner.cmd[0]).name != "aireplay-ng"
+                            for runner in self.runners))
 
     def test_broadcast_is_selectable_before_any_station_arrives(self):
         self.state(capture_silent=True)
@@ -320,8 +344,27 @@ class LifecycleTests(unittest.TestCase):
         self.wait(lambda: view.state.phase == "kick")
         self.assertEqual(view.state.client, demo.BROADCAST)
         self.assertFalse((self.root / "capturing").exists())
+        self.wait(lambda: "ping google.com" in self.events())
+        self.wait(lambda: bool(view.state.output))
+        self.assertIn("64 bytes from google.com", view.state.output[0])
         self.close(screen)
+        ping = self.ping_runner()
+        self.assertTrue(ping.stopped)
+        self.assertIsNotNone(ping._proc.poll())
         self.assertFalse(self.state()["monitor"])
+
+    def test_ping_failure_is_visible_and_restores_adapter(self):
+        self.state(ping_fail=True)
+        screen, view = self.start()
+        self.clients(screen, view)
+        screen.action("down")
+        screen.action("a")
+        screen._thread.join(6)
+        self.assertFalse(screen.alive)
+        self.assertEqual(screen.ctx.status, "error")
+        self.assertIn("ping failed (7)", screen.ctx.error)
+        self.assertFalse(self.state()["monitor"])
+        self.assertIn("ping google.com", self.events())
 
     def test_shutdown_stops_capture_before_restoring_and_is_idempotent(self):
         screen, view = self.start()
@@ -500,13 +543,34 @@ class ViewTests(unittest.TestCase):
                 view.action("a")
                 self.assertEqual(view.requests.get_nowait()[2], clients[-1])
                 for client in (CLIENT, demo.BROADCAST):
-                    view.transition("kick", ap=replace(AP, ssid="Long SSID " * 20), client=client)
+                    view.transition("kick", ap=replace(AP, ssid="Long SSID " * 20),
+                                    client=client, output=("mock output",))
                     for _ in range(100):
                         view.action("down")
                     with patch.object(theme, "render", wraps=theme.render) as render:
                         view.draw(surface, body, theme)
                     texts = [call.args[1] for call in render.call_args_list]
-                    self.assertIn("No real device is disconnected.", texts)
+                    self.assertIn("mock output", texts)
+                    self.assertIn("Ping output; no deauth command is run", texts)
+                view.transition("kick", ap=AP, client=CLIENT,
+                                output=tuple(f"ping output line {i}" for i in range(40)))
+                with patch.object(theme, "render", wraps=theme.render) as render:
+                    view.draw(surface, body, theme)
+                texts = [call.args[1] for call in render.call_args_list]
+                for label in ("Interface:", "ESSID:", "BSSID:", "Channel:", "Client:"):
+                    self.assertTrue(any(label in text for text in texts), label)
+                view.action("up")
+                with patch.object(theme, "render", wraps=theme.render) as render, \
+                        patch.object(pygame.draw, "rect", wraps=pygame.draw.rect) as draw_rect:
+                    view.draw(surface, body, theme)
+                self.assertGreater(view.output_log.offset, 0)
+                texts = [call.args[1] for call in render.call_args_list]
+                for label in ("Interface:", "ESSID:", "BSSID:", "Channel:", "Client:"):
+                    self.assertTrue(any(label in text for text in texts), label)
+                self.assertTrue(any("ping output line" in text for text in texts))
+                self.assertTrue(any(
+                    call.args[1] == theme.track and pygame.Rect(call.args[2]).width == 3
+                    for call in draw_rect.call_args_list))
                 view.action("b")
                 view.transition("clients", ap=AP, clients=(demo.BROADCAST,))
                 self.assertEqual(demo.request(view), (None, None))

