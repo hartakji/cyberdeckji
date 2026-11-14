@@ -67,8 +67,17 @@ class InputMapper:
                 out.append("quit")
 
             elif text_mode and t in (pygame.KEYDOWN, pygame.KEYUP, pygame.TEXTINPUT):
-                if on_text is not None and t != pygame.KEYUP:
-                    on_text(e)
+                if t == pygame.KEYUP:
+                    d = KEYDIR.get(e.key)
+                    if d:
+                        self._set("key", self._src["key"] - {d}, out)
+                elif on_text is not None:
+                    # Editors return grid directions so the normal repeat logic applies.
+                    d = on_text(e)
+                    if d in DIRS:
+                        self._set("key", self._src["key"] | {d}, out)
+                    else:
+                        self._src["key"].clear()
             elif t == pygame.KEYDOWN:
                 d = KEYDIR.get(e.key)
                 if d:

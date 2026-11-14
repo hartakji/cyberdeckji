@@ -146,6 +146,10 @@ columns while preserving old tuple forms.
 
 `InputMapper` emits named actions and repeats held directions. In text mode it
 routes physical keyboard events to `TextEditor.text_event` instead of handling
-Q, Space or Backspace as global shortcuts. Controller actions still work.
+Q, Space or Backspace as global shortcuts. The editor returns grid directions
+to the mapper to reuse held-key repeat; Enter selects the highlighted key.
+Typing switches to direct editing, where arrows move the text cursor and
+Enter accepts. Tab switches focus, and Ctrl+Enter always accepts.
+Controller actions still work.
 `main.py` processes events individually because an editor may open/close in the
 middle of a frame.

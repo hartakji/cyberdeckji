@@ -122,6 +122,102 @@ class FormScreenTests(unittest.TestCase):
         editor.text_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE))
         self.assertEqual(self.setup.values["host"], "aq")
 
+    def test_arrow_keys_and_enter_operate_on_screen_keyboard_with_repeat(self):
+        self.setup.action("a")
+        editor = self.nav.top
+        original = editor.value
+        with patch.object(InputMapper, "_open_sticks"), \
+                patch("pygame.key.start_text_input"), patch("pygame.key.stop_text_input"):
+            mapper = InputMapper(DEFAULTS)
+
+            def dispatch(events, dt=0):
+                top = self.nav.top
+                actions = mapper.process(events, dt, text_mode=top.text_input,
+                                         on_text=getattr(top, "text_event", None))
+                for action in actions:
+                    self.nav.top.action(action)
+                return actions
+
+            def press(key):
+                dispatch([pygame.event.Event(pygame.KEYDOWN, key=key)])
+                dispatch([pygame.event.Event(pygame.KEYUP, key=key)])
+
+            self.assertEqual(dispatch([
+                pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT)]), ["right"])
+            self.assertEqual(editor.selected, 1)
+            self.assertEqual(dispatch([], DEFAULTS["repeat_delay"] + 0.01), ["right"])
+            self.assertEqual(editor.selected, 2)
+            dispatch([pygame.event.Event(pygame.KEYUP, key=pygame.K_RIGHT)])
+            self.assertEqual(dispatch([], 1), [])
+            press(pygame.K_DOWN)
+            self.assertEqual(editor.selected, 10)
+            selected = editor.keys[editor.selected]
+            press(pygame.K_RETURN)
+            self.assertIs(self.nav.top, editor)
+            self.assertEqual(editor.value, original + selected)
+            while editor.keys[editor.selected] != "OK":
+                press(pygame.K_RIGHT)
+            press(pygame.K_RETURN)
+            self.assertIs(self.nav.top, self.setup)
+            self.assertEqual(self.setup.values["host"], original + selected)
+
+    def test_typing_and_tab_switch_between_text_and_grid_without_losing_edits(self):
+        self.setup.action("a")
+        editor = self.nav.top
+        with patch.object(InputMapper, "_open_sticks"), \
+                patch("pygame.key.start_text_input"), patch("pygame.key.stop_text_input"):
+            mapper = InputMapper(DEFAULTS)
+
+            def dispatch(event):
+                for action in mapper.process([event], 0, text_mode=True,
+                                             on_text=editor.text_event):
+                    editor.action(action)
+
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT))
+            dispatch(pygame.event.Event(pygame.TEXTINPUT, text="q "))
+            self.assertFalse(editor.keyboard_navigation)
+            self.assertEqual(mapper.process([], 1, text_mode=True,
+                                            on_text=editor.text_event), [])
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LEFT))
+            self.assertEqual(editor.cursor, len(editor.value) - 1)
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB))
+            self.assertTrue(editor.keyboard_navigation)
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT))
+            dispatch(pygame.event.Event(pygame.KEYUP, key=pygame.K_RIGHT))
+            selected = editor.keys[editor.selected]
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_KP_ENTER))
+            self.assertEqual(editor.value, "localhostq" + selected + " ")
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DELETE))
+            dispatch(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN,
+                                       mod=pygame.KMOD_CTRL))
+            self.assertIs(self.nav.top, self.setup)
+
+    def test_controller_returns_to_grid_after_physical_typing_and_can_cancel(self):
+        self.setup.action("a")
+        editor = self.nav.top
+        original = self.setup.values["host"]
+        editor.text_event(pygame.event.Event(pygame.TEXTINPUT, text="typed"))
+        with patch.object(InputMapper, "_open_sticks"), \
+                patch("pygame.key.start_text_input"), patch("pygame.key.stop_text_input"):
+            mapper = InputMapper(DEFAULTS)
+            for event in [
+                pygame.event.Event(pygame.JOYHATMOTION, value=(1, 0)),
+                pygame.event.Event(pygame.JOYHATMOTION, value=(0, 0)),
+                pygame.event.Event(pygame.JOYBUTTONDOWN, button=DEFAULTS["buttons"]["a"]),
+            ]:
+                for action in mapper.process([event], 0, text_mode=True,
+                                             on_text=editor.text_event):
+                    editor.action(action)
+            self.assertTrue(editor.keyboard_navigation)
+            self.assertEqual(editor.value, original + "typedb")
+            for action in mapper.process([
+                    pygame.event.Event(pygame.JOYBUTTONDOWN,
+                                       button=DEFAULTS["buttons"]["b"])],
+                    0, text_mode=True, on_text=editor.text_event):
+                editor.action(action)
+        self.assertIs(self.nav.top, self.setup)
+        self.assertEqual(self.setup.values["host"], original)
+
     def test_direct_legacy_launch_and_bad_setup(self):
         for setup, expected in ((None, "done"), (lambda: "not a form", "error"),
                                 (lambda: Form([Text("x", "X")]), "error")):
@@ -233,6 +329,30 @@ class TextRoutingTests(unittest.TestCase):
 
 
 class MainLoopTests(unittest.TestCase):
+    def test_same_frame_keyboard_grid_selection_accepts_only_with_ok(self):
+        from deckfw.main import main
+        calls = []
+        field = Text("message", "Message", default="hello ")
+        spec = AppSpec("Example", lambda ctx: calls.append(ctx.params),
+                       setup=lambda: Form([field]))
+        menu = Menu("Main", [Launch(spec)])
+
+        def press(code):
+            return [pygame.event.Event(pygame.KEYDOWN, key=code),
+                    pygame.event.Event(pygame.KEYUP, key=code)]
+
+        events = press(pygame.K_RETURN) * 2 + press(pygame.K_RIGHT) + press(pygame.K_RETURN)
+        keys = TextEditor(field, field.default, lambda value: None).keys
+        for _ in range(keys.index("OK") - 1):
+            events += press(pygame.K_RIGHT)
+        events += press(pygame.K_RETURN) + press(pygame.K_DOWN) + press(pygame.K_RETURN)
+        with patch.dict(os.environ, {"SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy"}), \
+                patch("deckfw.main.discover", return_value=[spec]), \
+                patch("deckfw.main.build_root_menu", return_value=menu), \
+                patch("pygame.event.get", side_effect=[events, [pygame.event.Event(pygame.QUIT)]]):
+            main(argv=["--windowed"])
+        self.assertEqual(calls, [{"message": "hello b"}])
+
     def test_same_frame_editor_transitions_do_not_trigger_quit_or_launch_early(self):
         from deckfw.main import main
         calls = []

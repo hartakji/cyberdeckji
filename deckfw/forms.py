@@ -2,6 +2,7 @@
 
 import pygame
 
+from .inputmap import KEYDIR
 from .parameters import Form, Number, Text
 from .screens import AppScreen, Screen
 from .widgets import Label
@@ -136,13 +137,19 @@ class SetupScreen(Screen):
 
 class TextEditor(Screen):
     text_input = True
-    hints = "D-pad keys  A type  B cancel  Enter accept"
+
+    @property
+    def hints(self):
+        if self.keyboard_navigation:
+            return "D-pad/Arrows move  A/Enter type  B/Esc cancel"
+        return "Typing  Left/Right cursor  Enter accept  Tab keys  Esc cancel"
 
     def __init__(self, field, value, commit):
         self.field, self.value, self.commit = field, value, commit
         self.cursor = len(value)
         self.selected = 0
         self.error = ""
+        self.keyboard_navigation = True
         chars = ("0123456789abcdef.:" if field.format == "ip" else
                  "abcdefghijklmnopqrstuvwxyz0123456789.-_:/@,;!?=+()[]{}'\"\\#$%&*~`^<>|")
         self.keys = list(chars) + ["SHIFT", "SPACE", "DEL", "CUR<", "CUR>", "OK", "CANCEL"]
@@ -169,6 +176,8 @@ class TextEditor(Screen):
         self.nav.pop()
 
     def action(self, name):
+        if name in ("left", "right", "up", "down", "a"):
+            self.keyboard_navigation = True
         if name == "b":
             self.nav.pop()
         elif name in ("left", "right"):
@@ -204,10 +213,20 @@ class TextEditor(Screen):
 
     def text_event(self, event):
         if event.type == pygame.TEXTINPUT:
+            self.keyboard_navigation = False
             self.insert(event.text)
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_RETURN:
-                self.accept()
+            direction = KEYDIR.get(event.key)
+            if direction and (self.keyboard_navigation or direction in ("up", "down")):
+                self.keyboard_navigation = True
+                return direction
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                if self.keyboard_navigation and not getattr(event, "mod", 0) & pygame.KMOD_CTRL:
+                    self.action("a")
+                else:
+                    self.accept()
+            elif event.key == pygame.K_TAB:
+                self.keyboard_navigation = not self.keyboard_navigation
             elif event.key == pygame.K_ESCAPE:
                 self.nav.pop()
             elif event.key == pygame.K_BACKSPACE:
@@ -220,8 +239,10 @@ class TextEditor(Screen):
             elif event.key == pygame.K_RIGHT:
                 self.cursor = min(len(self.value), self.cursor + 1)
             elif event.key == pygame.K_HOME:
+                self.keyboard_navigation = False
                 self.cursor = 0
             elif event.key == pygame.K_END:
+                self.keyboard_navigation = False
                 self.cursor = len(self.value)
 
     def draw(self, surf, rect, theme):
@@ -248,14 +269,15 @@ class TextEditor(Screen):
                 continue
             cell = pygame.Rect(rect.x + pad + col * cell_w, start + (row - top) * cell_h,
                                cell_w - 2, cell_h - 2)
-            if index == self.selected:
+            if index == self.selected and self.keyboard_navigation:
                 pygame.draw.rect(surf, theme.track, cell)
             label = key.upper() if self.uppercase and len(key) == 1 else key
             Label(label, size="small", align="center", valign="center").draw(
                 surf, cell, theme)
         if not self.error:
             total_rows = (len(self.keys) + 7) // 8
-            message = f"Keys {top + 1}-{min(total_rows, top + rows)}/{total_rows}; Down for more"
+            message = (f"Keys {top + 1}-{min(total_rows, top + rows)}/{total_rows}; "
+                       "Tab: text/keys; Ctrl+Enter: accept")
         else:
             message = self.error
         Label(message, size="small", color="crit" if self.error else "dim").draw(

@@ -13,6 +13,7 @@ from deckfw.menu import Launch, Menu, MenuScreen, default_menu
 from deckfw.loader import discover
 from deckfw.screens import Navigator
 from deckfw.theme import Theme
+from apps import _wifi_scan as shared
 
 with patch.object(context, "_REGISTRY", []):
     from apps import wifi_scanner as scanner
@@ -101,7 +102,7 @@ class ParserTests(unittest.TestCase):
             (root / "eth0").mkdir()
             (root / "lo").mkdir()
             with patch.object(scanner.sys, "platform", "linux"), \
-                    patch.object(scanner, "Path", return_value=root):
+                    patch.object(shared, "Path", return_value=root):
                 self.assertEqual(scanner.wireless_interfaces(), ("wlan0", "wlp2s0"))
 
     def test_detection_errors_are_visible(self):
@@ -110,11 +111,11 @@ class ParserTests(unittest.TestCase):
             scanner.setup()
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(scanner.sys, "platform", "linux"), \
-                patch.object(scanner, "Path", return_value=Path(directory)), \
+                patch.object(shared, "Path", return_value=Path(directory)), \
                 self.assertRaisesRegex(ValueError, "No wireless interfaces"):
             scanner.setup()
         with patch.object(scanner.sys, "platform", "linux"), \
-                patch.object(scanner, "Path") as path:
+                patch.object(shared, "Path") as path:
             path.return_value.iterdir.side_effect = PermissionError("denied")
             with self.assertRaisesRegex(ValueError, "Cannot detect.*denied"):
                 scanner.setup()
@@ -280,6 +281,33 @@ class NetworkListTests(unittest.TestCase):
         with patch.object(ctx, "run", side_effect=results):
             scanner.scan(ctx, "nmcli", "", "both", on_interfaces=callback.append)
         self.assertEqual(callback, [("wlan0", "wlp2s0")])
+
+    def test_selectable_table_tracks_identity_without_needing_a_draw(self):
+        points = scanner.parse_networks([
+            record(bssid=f"02:00:00:00:00:{i:02x}", signal=100 - i)
+            for i in range(10)
+        ])
+        view = scanner.NetworkList(selectable=True)
+        view.snapshot = scanner.Snapshot(points)
+        view.action("down")
+        view.action("down")
+        chosen = points[2]
+        self.assertEqual(view.selected_bssid, chosen.bssid)
+        view.snapshot = scanner.Snapshot(tuple(reversed(points)))
+        view.action("a")
+        self.assertIs(view.requests.get_nowait(), chosen)
+        self.assertEqual(view.selected_bssid, chosen.bssid)
+        view.snapshot = scanner.Snapshot(points, error="STALE")
+        view.action("a")
+        self.assertTrue(view.requests.empty())
+        view.snapshot = scanner.Snapshot(())
+        view.action("down")
+        view.action("a")
+        self.assertIsNone(view.selected_bssid)
+        self.assertTrue(view.requests.empty())
+        view.snapshot = scanner.Snapshot((points[0],))
+        view.action("a")
+        self.assertIs(view.requests.get_nowait(), points[0])
 
 
 class ScannerIntegrationTests(unittest.TestCase):

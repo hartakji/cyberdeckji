@@ -16,6 +16,7 @@ Console without X11? Try `SDL_VIDEODRIVER=kmsdrm python3 deck.py`.
 | Python 3, `pygame-ce` (imported as `pygame`), `psutil` | Launcher and native Python apps; install with `python3 -m pip install -r requirements.txt` |
 | `arp-scan` and `nmap` | LAN device discovery and TCP port scanner |
 | NetworkManager with `nmcli` | Wi-Fi scanner; NetworkManager must be running |
+| NetworkManager, `dnsmasq`, `iw`, `ip`, `nft`, GNU `timeout` | QuickShare hotspot; root network control and an AP-capable Wi-Fi adapter |
 | `mkfs.fat`, `mkfs.ext4`, `mkfs.ntfs`, `parted`, `partprobe` | Removable-storage formatting (only the selected filesystem formatter is required; partition tools are needed for whole drives) |
 | `systemctl`, GNU `timeout`, installed USB gadget services | USB-OTG apps |
 | `fallocate`, `parted`, and the selected `mkfs` formatter | Creating USB-OTG storage images (`mkfs.exfat` is needed for exFAT) |
@@ -45,6 +46,93 @@ runs every native app and custom script with root privileges. Only do this with
 reviewed, trusted code; prefer administrator-configured permissions for the
 specific tool rather than elevating the entire GUI. The launcher never invokes
 sudo automatically.
+
+## QuickShare (Linux)
+
+**Apps > Network > QuickShare** creates a temporary Wi-Fi hotspot for local
+browser uploads and downloads. NetworkManager stays running and manages AP mode
+and DHCP; the app does not kill networking services or require hostapd, nginx,
+Apache or additional Python packages.
+
+On Debian/Ubuntu, install:
+
+```sh
+sudo apt install network-manager dnsmasq-base iw iproute2 nftables coreutils
+```
+
+NetworkManager also needs a working Wi-Fi backend, usually `wpasupplicant`
+(or a compatible existing iwd setup). Do not enable a separate system-wide
+dnsmasq service. If NetworkManager is configured to use its iptables firewall
+backend, that backend's tools must also be installed. The app does not change
+global NetworkManager or firewall settings. The NetworkManager version must
+support AP client isolation; missing properties or unsupported WPA3/SAE/PMF
+produce errors, never a downgrade to WEP or another security mode.
+
+This app requires an **already-root launcher** to manage NetworkManager and
+nftables; it never invokes sudo. The form always offers a **non-root folder
+owner** with a local home and login shell. It defaults to the invoking
+`SUDO_UID` account, using the same helper as the CD-ROM app. Without that
+default, explicitly select an owner. The file service drops to that user's
+UID, primary GID and supplementary groups **before** creating/opening
+`~/QuickShare/` or accepting requests. A plain root launch does not make
+`/root/QuickShare/` the share. Existing data is not recursively chowned.
+
+Select an interface, SSID, owner, Open/WPA2-Personal/WPA3-Personal and one of
+`192.168.1.0/24`, `192.168.2.0/24`, `192.168.10.0/24` (default), or
+`10.0.0.0/24`. The hotspot uses `.1`, and NetworkManager allocates DHCP leases
+within that subnet. Conflicts with other interface networks or non-default
+routes are rejected. Secured modes generate a fresh 12-character password on
+each enable; find it in **Details**, not in the activity log. AP mode on the
+selected adapter replaces its existing Wi-Fi connection and requires the
+form's disconnect consent. A second adapter avoids interrupting that connection.
+
+Connect another device and open the displayed numeric URL, for example
+**http://192.168.10.1:8080/**. Left/Right switches between Details, Clients and
+Activity; Up/Down scrolls the current pane. Clients shows associated MACs
+(including idle stations), with IPv4 addresses when known. A station is not a
+verified person; usernames and reliable hostnames are not available.
+
+**Local-only:** NetworkManager's shared mode normally enables routing/NAT.
+QuickShare installs its own scoped nftables guard *before* activating the
+hotspot to block forwarding in both directions and restrict host access to
+DHCP and the sharing port. IPv6 is disabled on the profile. DNS forwarding and
+other host services are not exposed; use the numeric URL. AP client isolation
+is requested. Existing firewall policy can still deny DHCP or HTTP, and is
+never overridden. Phones may report "no internet"; choose to stay connected
+instead of switching to cellular.
+
+**Everyone connected can read and add files; there is no web login.** Open
+mode requires explicit consent: anyone nearby can join, read the share or fill
+it to the disk reserve. HTTP adds no TLS protection. Treat this as a temporary
+trusted-peer share, not an internet-facing server. Share only files intended
+for those peers. There is no remote deletion, overwrite or directory browsing.
+Symlinks, hidden files and non-regular files are not shared. Completed uploads
+appear atomically, with numbered names on collision. The page lists up to
+1000 files; direct downloads still work for other regular files in the root.
+
+Uploads stream to disk without a fixed file-size cap, retaining **256 MiB**
+of free space. Filesystem size limits and quotas still apply. Uploads are
+serialized; retry if another client is uploading. Partial uploads are removed
+on handled failures, disconnects and normal shutdown. Connections and idle
+time are bounded; interrupted transfers cannot be resumed.
+
+Press B to stop the service, remove its temporary profile and firewall table,
+and restore the previous connection if the adapter has not been changed
+elsewhere. Failures remain visible. A crash, SIGKILL or power loss can bypass
+cleanup. The HTTP child also stops when it detects the launcher has exited,
+but that does not tear down NetworkManager's hotspot. The Activity pane and
+root-only `/run/quickshare-INTERFACE.lock` recovery record identify the exact
+profile UUID, previous connection UUID and `inet quickshare_...` table name.
+An unrecovered session blocks a new launch on that interface. For targeted
+recovery, after confirming the resources belong
+to the failed session, deactivate/delete that profile with `nmcli`, confirm
+the AP is down, then delete **only that table** with `nft delete table inet
+TABLE_NAME` and reactivate the previous connection if needed. If deactivation
+fails, leave the guard installed. Never flush the firewall or delete unrelated
+profiles. The recovery record is cleared on successful cleanup; do not remove
+or alter a live session's lock. Hidden `.quickshare-*.partial` files from a
+forced termination may be removed from the selected share after confirming no
+transfer is active.
 
 ## USB-OTG (Linux)
 
@@ -490,11 +578,15 @@ In the setup form, **Up/Down** selects a field or the final action;
 at their bounds. **A** opens text editing or activates the final action.
 **B** leaves setup without executing anything.
 
-The on-screen keyboard works with the D-pad and A. Select **SHIFT** for uppercase,
+The on-screen keyboard works with the D-pad and A, or keyboard **arrow keys
+and Enter** to move the highlight and type the selected key. Select **SHIFT** for uppercase,
 **SPACE**, **DEL**, **CUR< / CUR>** for insertion cursor movement, and **OK** to
 accept or **CANCEL** to discard. IP-only fields use a numeric/hex-address keypad
-(`format="ip"` supports IPv4 and IPv6). Physical keyboards support normal typing,
-Left/Right, Home/End, Backspace/Delete, Enter to accept and Escape to discard.
+(`format="ip"` supports IPv4 and IPv6). Normal typing switches to direct text
+editing: Left/Right moves the text cursor, Home/End jumps within the text,
+Backspace/Delete removes characters, and Enter accepts. **Tab** switches
+between direct editing and the key grid; Up/Down or the controller also returns
+to the grid. **Ctrl+Enter** always accepts, and Escape discards the edit.
 While editing, Q and Space type characters instead of quitting/activating.
 The controller Select+Start quit chord and window close still work.
 
