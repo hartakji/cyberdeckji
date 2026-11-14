@@ -134,6 +134,45 @@ or alter a live session's lock. Hidden `.quickshare-*.partial` files from a
 forced termination may be removed from the selected share after confirming no
 transfer is active.
 
+## Terminal-only observed Wi-Fi clients (Linux)
+
+`tools/airodump_clients.py` uses only Python 3's standard library and
+`airodump-ng` from aircrack-ng (`sudo apt install aircrack-ng` on Debian/Ubuntu).
+It is not a launcher/menu tool. Monitor-mode-capable hardware, an **already
+configured monitor-mode interface**, and capture permissions are preconditions.
+Have an administrator configure appropriate permissions; do not elevate the
+entire launcher. The script never invokes sudo or changes interface mode.
+
+```sh
+python3 tools/airodump_clients.py --interface wlan0mon \
+  --bssid 02:11:22:33:44:55 --channel 6
+```
+
+Use only on networks you own or have explicit permission to observe. This is
+passive capture: no active scans, traffic injection or deauthentication. It
+filters airodump's separate CSV station section to **one BSSID**, refreshes
+every two seconds, and retains every matching station MAC observed since this
+invocation started, even when absent from later snapshots. Rows show BSSID,
+first/last seen, power (`-1` means unavailable) and packet count. These are
+**observed clients, not authoritative currently connected devices**: silent,
+out-of-range or missed traffic can hide clients, and randomized MACs can appear
+as different clients. No IP, name or vendor resolution is performed.
+
+CSV rewrites are reopened with bounded retries; incomplete snapshots preserve
+the previous observations and persistent failures are reported. Ctrl+C or
+SIGTERM stops only this script's capture subprocess (with bounded escalation)
+and removes its private temporary capture files. Nothing is saved as history;
+forced termination or a crash cannot guarantee cleanup.
+
+Manual Linux hardware smoke check (not covered by the synthetic tests): on an
+authorized network with the prerequisites above, run the example using its real
+BSSID/channel, generate ordinary traffic from a known client, and confirm its
+row appears. Stop that client's traffic and confirm the row remains. Check
+unavailable power is labeled, then press Ctrl+C and confirm the capture process
+and its temporary directory are removed. Check missing-tool and insufficient
+capture-permission diagnostics separately. Automated tests never capture radio
+traffic.
+
 ## USB-OTG (Linux)
 
 **Apps > USB-OTG** contains:
